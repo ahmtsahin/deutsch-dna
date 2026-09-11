@@ -1,0 +1,55 @@
+# Renders demo/deutschdna.gif for the README with VHS: https://github.com/charmbracelet/vhs
+# Run from the repository root:   vhs demo/deutschdna.tape
+# Needs python and bash; macOS, Linux, and WSL work out of the box.
+# Every screen is real engine output for a four-month learner story (scripts/demo.py).
+
+Output demo/deutschdna.gif
+
+Require python
+
+Set Shell "bash"
+Set FontSize 16
+Set Width 1180
+Set Height 760
+Set Padding 24
+Set Theme "Catppuccin Mocha"
+Set TypingSpeed 35ms
+
+Hide
+Type "rm -rf demo-home && python scripts/demo.py --home demo-home --quiet > /dev/null"
+Enter
+Type `dna() { python scripts/deutsch_dna.py --home demo-home "$@" --format text; }`
+Enter
+Type "clear"
+Enter
+Show
+
+# 1. The tutor remembers you.
+Type "dna recap"
+Sleep 400ms
+Enter
+Sleep 5s
+
+# 2. Your German DNA, and the root cause behind the symptoms.
+Type "clear"
+Enter
+Type "dna summary"
+Sleep 400ms
+Enter
+Sleep 8s
+
+# 3. One mistake, from first slip to mastered, with a new sentence every review.
+Type "clear"
+Enter
+Type "dna show m_d90db5d8f27a"
+Sleep 400ms
+Enter
+Sleep 6s
+
+# 4. Three months later the old mistake comes back, and DeutschDNA notices.
+Type "clear"
+Enter
+Type "dna show m_f73a2424acc8"
+Sleep 400ms
+Enter
+Sleep 7s

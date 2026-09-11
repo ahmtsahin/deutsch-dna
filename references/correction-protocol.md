@@ -1,0 +1,78 @@
+# Minimal correction protocol
+
+## Output order
+
+Use this compact structure when an actual error exists:
+
+```text
+Dein Satz
+Ich möchte morgen mit mein Chef darüber sprechen.
+
+Minimale Korrektur
+Ich möchte morgen mit meinem Chef darüber sprechen.
+
+Warum
+mit + Dativ: mein → meinem
+
+Prüfung
+LanguageTool supports this correction.
+```
+
+Show only the changed fragment in **Warum**. If the learner asks for a natural rewrite, add:
+
+```text
+Native alternative — not a correction
+Morgen würde ich das gern mit meinem Chef besprechen.
+```
+
+If the sentence is already correct, say so. Do not manufacture a correction in order to teach something. If the sentence correctly uses a pattern the learner used to get wrong, say that in one line and log it with `observe`.
+
+## The recurrence callback
+
+When `record` answers `status: updated`, the learner has made this mistake before. Add one **Muster** line; it is the moment the tutor proves it remembers. Build it only from the CLI response:
+
+- Several times this week (`recent.occurrences` of 2 or more): say how often.
+
+  ```text
+  Muster
+  mit + Dativ · 3. Mal in 7 Tagen
+  ```
+
+- Back after a long pause (`previous.last_seen` weeks ago): say how long it stayed away and how far it had climbed (`previous.review_step` of 6), or that it had been mastered (`previous.status`).
+
+  ```text
+  Muster
+  warten auf + Akkusativ · nach 104 Tagen zurück · du warst schon bei Stufe 5 von 6
+  ```
+
+Then say in one sentence that it will come back tomorrow in a new sentence. Never invent a count or a date that the CLI did not return.
+
+## Minimality
+
+- Preserve the learner's meaning, register, tense, vocabulary, and information order.
+- Change multiple tokens only when one grammatical dependency requires it, such as article plus adjective ending.
+- Do not replace a valid word with a preferred synonym.
+- Keep punctuation and capitalization changes separate from grammar explanations when that makes the real error easier to see.
+- If the CLI returns `minimality_status: possible_rewrite`, reconsider the correction or clearly label the larger version as an alternative.
+
+## Validator labels
+
+Use the CLI result without upgrading its certainty:
+
+- `verified`: LanguageTool found an issue in the original, suggested the changed fragment, and found no issue in the correction. Say **LanguageTool supports this correction**.
+- `supported`: LanguageTool reports fewer issues and no new rule IDs, but some findings remain. Say **LanguageTool partially supports this correction**.
+- `no_finding`: LanguageTool did not detect the proposed error. Say **LanguageTool did not verify this change**.
+- `uncertain`: findings remain or new rule IDs appear. Show the disagreement briefly and call the change a suggestion.
+- `unavailable`: the local server could not be reached, or the endpoint is remote and not allowed. Say **Not LanguageTool-verified**.
+
+These labels mean machine-checked, not linguistically proven. Semantic and register judgments remain model-only.
+
+## What to persist
+
+Persist a mistake only when:
+
+- the learner actually produced it;
+- the correction is grammatically necessary, not just more elegant; and
+- the root cause can be named stably.
+
+Prefer `record --mistake-id` for a pattern that already exists in `list`; otherwise use a key from the pattern catalog. Do not persist typos that the learner immediately identifies, quoted third-party text, or uncertain stylistic preferences unless the learner asks to track them. Never `record` a failed review item; `grade --result fail` already counts the recurrence.

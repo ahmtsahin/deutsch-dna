@@ -1,0 +1,6 @@
+interface:
+  display_name: "DeutschDNA"
+  short_description: "German coach that remembers every mistake"
+  brand_color: "#D9FF45"
+  default_prompt: "Use $deutsch-dna to correct my German minimally and turn recurring mistakes into practice."
+

@@ -39,8 +39,12 @@ Every writing command accepts `--at ISO-8601` for deterministic integrations and
 - `status`: `recorded` (new pattern), `updated` (recurrence), or `duplicate` (nothing changed).
 - `resolved_by`: how an existing pattern was found: `mistake_id`, `id`, `pattern_key`, or `alias`.
 - `recent.occurrences`: errors on this pattern in the last 7 days, including this one.
-- `previous` (recurrences only): the pattern's `last_seen`, `review_step`, `status`, and `occurrences` before this error. Use it for the recurrence callback in the correction protocol.
+- `previous` (recurrences only): the pattern's `last_seen`, `review_step`, `status`, and `occurrences` before this error, plus `first_example` and `last_example`, the earliest and the latest stored wrong sentence. Use them for the recurrence callback in the correction protocol.
 - `similar_patterns` and `hint` (new patterns only): existing patterns whose key is at least 72% similar, with a ready `merge` command.
+
+## The observe response
+
+Each entry in `results` carries `status` (`observed`, `observed_and_advanced`, or `duplicate`), the new `correct_uses`, the schedule, and `last_mistake`: the latest stored wrong sentence, for the before-and-after line.
 
 ## Pattern identity
 
@@ -68,8 +72,9 @@ The successful review sequence is 1, 3, 7, 14, 30, then 60 days. Recording a rec
 - `occurrences` (shown as *wrong*): every recorded error, including review failures.
 - *right*: `correct_uses` plus passes from real reviews.
 - `accuracy_percent` = round(100 × (right + 1) / (right + wrong + 2)). The smoothing keeps a single error from reading as 0% and a single pass from reading as 100%.
-- A category is `weak` when its accuracy is below 60% and it has at least two errors.
-- A *cluster* (shown as **Root cause**) is a category with at least two active patterns and three errors among them. Clusters are ranked by how many different patterns in the family failed in the last 30 days (`recent_patterns`), then by recent errors, then by total errors. Breadth outranks depth: four different verb-plus-preposition mistakes say more about the rule than one pattern missed four times.
+- A pattern or category is `new` until it has at least one graded review or correct use. Text cards show `neu` instead of a percentage, and the weakest-pattern list skips new patterns: a first text is not a score.
+- A category is `weak` when it is not new, its accuracy is below 60%, and it has at least two errors.
+- A *cluster* (shown as **Root cause**) is a category with at least two active patterns and three errors among them. Clusters are ranked by how many different patterns in the family failed in the last 30 days (`recent_patterns`), then by recent errors, then by total errors. Breadth outranks depth: four different verb-plus-preposition mistakes say more about the rule than one pattern missed four times. The **Root cause** line states the family's share of all mistakes in the same 30 days (`recent_errors` of `recent_errors_total`).
 - `mastery_percent` is the average review-ladder position per category (0–100), kept for integrations.
 - `streak_days` counts consecutive UTC days with any recorded activity, ending today or yesterday.
 

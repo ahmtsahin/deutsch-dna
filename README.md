@@ -25,6 +25,15 @@ Mastered: mit + dative · -ung nouns are feminine
 3 mistakes due for review · 5-minute challenge?
 ```
 
+Then, instead of a menu, the tutor opens with one of the learner's own sentences and a new situation that calls for the same structure:
+
+```text
+Gestern hast du geschrieben: „Das ist ein wichtige Termin."
+Deine Kollegin fragt, was du am Wochenende gekauft hast. Beschreib es in einem Satz.
+```
+
+Get it right, and yesterday's sentence and today's appear side by side. Get it wrong, and the mistake is caught on the spot. Either way the learner sees that the tutor remembers.
+
 ### It finds the root cause, not the symptom
 
 ```text
@@ -38,12 +47,12 @@ Wortstellung    ██████░░░░  64%   2 patterns · 0 mastered �
 Endungen        ██████░░░░  55%   2 patterns · 0 mastered · 8 wrong · 10 right   ← weak
 Plural          ███████░░░  67%   1 pattern  · 0 mastered · 1 wrong · 3 right
 
-Root cause: Präpositionen · 4 of 4 related patterns wrong in the last 30 days
+Root cause: Präpositionen · 5 of your 15 mistakes in 30 days · 4 related patterns
   → sich freuen auf + accusative
   → warten auf + accusative
   → sich interessieren für + accusative
   → Angst haben vor + dative
-Also: Endungen · 2 of 2 related patterns wrong in the last 30 days
+Also: Endungen · 5 of your 15 mistakes in 30 days · 2 related patterns
 
 Weakest patterns
   weil sends finite verb to end     40%  2 wrong · 1 right · step 0/6
@@ -116,17 +125,19 @@ LanguageTool supports this correction.
 
 Muster
 warten auf + Akkusativ · nach 104 Tagen zurück · du warst schon bei Stufe 5 von 6
+Am 14. Mai: „Ich warte dich." · heute: „Ich warte meine Freundin."
 ```
 
 The **Muster** line is built from what the CLI returns when the mistake is recorded, never from the model's imagination. Tomorrow the pattern comes back in a sentence the learner has not seen.
 
 ## Why it is different
 
+- **It starts with your own words.** Every session opens with a sentence you wrote and a new situation that asks for the same structure, not with a menu.
 - **Root causes, not sentence pairs.** Most tutors store *wrong → right*. DeutschDNA stores *why*: `mit + Dativ`, `mit+dat.`, and `mit governs the dative` all resolve to one pattern, and related patterns roll up into a root cause.
 - **Minimal corrections.** It fixes your sentence instead of rewriting it, so you can see your own mistake. A more natural version is labeled *Native alternative — not a correction*.
 - **Allowed to say "I'm not sure."** Corrections can be checked against a local LanguageTool server. Disagreement is shown, not hidden, and uncertain corrections are not filed as your mistakes.
 - **Spaced repetition for mistakes, not flashcards.** Reviews at 1, 3, 7, 14, 30, and 60 days. Any recurrence resets the ladder. Using the structure correctly in real writing on a day it is due counts as that review.
-- **Honest numbers.** Accuracy is smoothed and covers tracked patterns only. A category you have never been corrected on is unknown, not 0%.
+- **Honest numbers.** Nothing is scored before it has been tested: a fresh pattern shows *neu*, not 20%. Accuracy is smoothed and covers tracked patterns only.
 - **Portable and private.** Plain JSON in `~/.deutschdna`. Nothing leaves your machine unless you explicitly allow a remote validator.
 
 ## Install
@@ -148,7 +159,7 @@ See the official [Claude Code skill guide](https://code.claude.com/docs/en/skill
 
 ## Use it
 
-Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just write German and ask for feedback. On the first run it asks for five or six sentences about your week and shows your first DeutschDNA. From then on, every conversation opens with a recap and the mistakes that are due.
+Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just write German and ask for feedback. It talks to you in German at your level. On the first run it asks for five or six sentences about your week and shows your first DeutschDNA: no scores yet, just the root cause behind most of your mistakes. From then on, every conversation opens with one of your own sentences and a new situation that asks for the same structure.
 
 - **Correct my German.** Minimal correction, the reason, a verification label, and the recurrence callback when a mistake comes back.
 - **Let's review.** One due mistake at a time, each in a new situation.

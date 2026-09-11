@@ -25,27 +25,42 @@ Native alternative — not a correction
 Morgen würde ich das gern mit meinem Chef besprechen.
 ```
 
-If the sentence is already correct, say so. Do not manufacture a correction in order to teach something. If the sentence correctly uses a pattern the learner used to get wrong, say that in one line and log it with `observe`.
+If the sentence is already correct, say so. Do not manufacture a correction in order to teach something. If the sentence correctly uses a pattern the learner used to get wrong, log it with `observe` and add the before-and-after line.
 
 ## The recurrence callback
 
-When `record` answers `status: updated`, the learner has made this mistake before. Add one **Muster** line; it is the moment the tutor proves it remembers. Build it only from the CLI response:
+When `record` answers `status: updated`, the learner has made this mistake before. Add a **Muster** block; it is the moment the tutor proves it remembers. Build it only from the CLI response.
+
+The first line names the pattern and the numbers:
 
 - Several times this week (`recent.occurrences` of 2 or more): say how often.
-
-  ```text
-  Muster
-  mit + Dativ · 3. Mal in 7 Tagen
-  ```
-
 - Back after a long pause (`previous.last_seen` weeks ago): say how long it stayed away and how far it had climbed (`previous.review_step` of 6), or that it had been mastered (`previous.status`).
 
-  ```text
-  Muster
-  warten auf + Akkusativ · nach 104 Tagen zurück · du warst schon bei Stufe 5 von 6
-  ```
+The second line quotes the earliest stored sentence for this pattern (`previous.first_example`) with its date, next to the sentence from today. Seeing their own old sentence is what makes the learner feel remembered.
 
-Then say in one sentence that it will come back tomorrow in a new sentence. Never invent a count or a date that the CLI did not return.
+```text
+Muster
+mit + Dativ · 3. Mal in 7 Tagen
+Am 9. September: „Ich spreche mit mein Chef." · heute: „Ich gehe mit meine Kollegin essen."
+```
+
+```text
+Muster
+warten auf + Akkusativ · nach 104 Tagen zurück · du warst schon bei Stufe 5 von 6
+Am 14. Mai: „Ich warte dich." · heute: „Ich warte meine Freundin."
+```
+
+Then say in one sentence that it will come back tomorrow in a new sentence. Never invent a count, a date, or a quote that the CLI did not return.
+
+## The before-and-after line
+
+When the learner gets a tracked pattern right, unprompted or in an opener task, log it with `observe` and set the last wrong sentence from the response (`last_mistake`) next to the new one:
+
+```text
+Vor 12 Tagen: „Ich spreche mit mein Chef." · Heute: „Wir haben mit unseren Kunden gesprochen." ✓
+```
+
+Keep it to one line and do not explain the rule again; the contrast is the message.
 
 ## Minimality
 

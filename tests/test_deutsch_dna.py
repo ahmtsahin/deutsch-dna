@@ -362,7 +362,8 @@ class ReportingTests(StoreTestCase):
         self.assertEqual(bucket["errors"], 3)
         self.assertEqual(bucket["correct"], 0)
         self.assertEqual(bucket["accuracy_percent"], 20)
-        self.assertTrue(bucket["weak"])
+        self.assertTrue(bucket["new"])
+        self.assertFalse(bucket["weak"])
         self.assertEqual(summary["clusters"][0]["category"], "preposition")
         self.assertEqual(summary["clusters"][0]["patterns"][0], "denken an + accusative")
         self.assertEqual(summary["streak_days"], 2)
@@ -373,6 +374,8 @@ class ReportingTests(StoreTestCase):
         summary = self.store.summary(at=BASE_TIME + timedelta(days=1, hours=3))
         self.assertEqual(summary["categories"]["preposition"]["correct"], 1)
         self.assertEqual(summary["categories"]["preposition"]["accuracy_percent"], 33)
+        self.assertFalse(summary["categories"]["preposition"]["new"])
+        self.assertTrue(summary["categories"]["preposition"]["weak"])
         self.assertEqual(summary["weakest_patterns"][0]["pattern"], "denken an + accusative")
 
     def test_recap_counts_window_events(self):
@@ -573,7 +576,8 @@ class CliTests(unittest.TestCase):
         summary = self.run_cli("summary", "--format", "text", "--at", "2026-09-02T09:00:00Z")
         self.assertIn("DeutschDNA · Ahmet · B2", summary)
         self.assertIn("Kasus", summary)
-        self.assertIn("░", summary)
+        self.assertIn("neu", summary)
+        self.assertNotIn("%", summary)
         recap = self.run_cli("recap", "--format", "text", "--at", "2026-09-02T09:00:00Z")
         self.assertIn("Willkommen zurück, Ahmet.", recap)
         self.assertIn("1 mistake due for review", recap)
@@ -586,6 +590,9 @@ class CliTests(unittest.TestCase):
         self.assertEqual(empty.strip(), "No patterns match.")
         graded = json.loads(self.run_cli("grade", mistake_id, "--result", "pass", "--at", "2026-09-02T10:00:00Z"))
         self.assertEqual(graded["mistake"]["review_step"], 1)
+        reviewed = self.run_cli("summary", "--format", "text", "--at", "2026-09-02T11:00:00Z")
+        self.assertIn("░", reviewed)
+        self.assertIn("50%", reviewed)
         renamed = json.loads(self.run_cli("rename", mistake_id, "--rule", "mit governs the dative"))
         self.assertEqual(renamed["mistake"]["rule"], "mit governs the dative")
         timeline = self.run_cli("show", graded["mistake"]["id"], "--format", "text")
@@ -733,9 +740,10 @@ class TimelineAndMigrationTests(StoreTestCase):
         self.assertEqual(summary["clusters"][0]["recent_patterns"], 3)
         self.assertEqual(summary["clusters"][1]["recent_patterns"], 1)
         text = dna.render_summary_text(summary)
-        self.assertIn("Root cause: Präpositionen · 3 of 3 related patterns wrong in the last 30 days", text)
+        self.assertEqual(summary["recent_errors_total"], 7)
+        self.assertIn("Root cause: Präpositionen · 3 of your 7 mistakes in 30 days · 3 related patterns", text)
         self.assertIn("  → warten auf + accusative", text)
-        self.assertIn("Also: Endungen · 1 of 2 related patterns wrong in the last 30 days", text)
+        self.assertIn("Also: Endungen · 4 of your 7 mistakes in 30 days · 1 related pattern", text)
 
     def test_demo_story_replays_through_the_engine(self):
         sys.path.insert(0, str(SCRIPT.parent))
@@ -817,6 +825,61 @@ class UndoTests(StoreTestCase):
             code = dna.main(["--home", str(self.home), "undo", mistake["id"]])
         self.assertEqual(code, 0)
         self.assertEqual(json.loads(buffer.getvalue())["status"], "removed")
+
+
+class CallbackDataTests(StoreTestCase):
+    def test_first_session_profile_has_no_percentages_and_names_the_share(self):
+        self.store.init_profile(name="Ahmet", level="B2", native_language="tr", at=BASE_TIME)
+        sentences = [
+            ("word-order", "finite verb in second position", "Morgen ich gehe.", "Morgen gehe ich."),
+            ("word-order", "finite verb in second position", "Dann ich esse.", "Dann esse ich."),
+            ("word-order", "weil sends finite verb to end", "weil ich bin krank", "weil ich krank bin"),
+            ("case", "mit + dative", "mit mein Chef", "mit meinem Chef"),
+        ]
+        for index, (category, pattern, original, corrected) in enumerate(sentences):
+            self.record_example(
+                category=category,
+                pattern=pattern,
+                original=original,
+                corrected=corrected,
+                at=BASE_TIME + timedelta(minutes=index),
+            )
+        summary = self.store.summary(at=BASE_TIME + timedelta(hours=1))
+        self.assertTrue(all(bucket["new"] for bucket in summary["categories"].values()))
+        self.assertFalse(any(bucket["weak"] for bucket in summary["categories"].values()))
+        text = dna.render_summary_text(summary)
+        self.assertNotIn("%", text)
+        self.assertNotIn("weak", text)
+        self.assertNotIn("Weakest patterns", text)
+        self.assertIn("Wortstellung    neu", text)
+        self.assertIn("Root cause: Wortstellung · 3 of your 4 mistakes in 30 days · 2 related patterns", text)
+
+    def test_recurrence_returns_the_first_and_last_wrong_sentence(self):
+        self.record_example(original="Ich spreche mit mein Chef.", corrected="Ich spreche mit meinem Chef.")
+        self.record_example(
+            original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(days=2)
+        )
+        _, status, extra = self.record_example(
+            original="Ich wohne bei mein Bruder mit meine Katze.",
+            corrected="Ich wohne bei meinem Bruder mit meiner Katze.",
+            at=BASE_TIME + timedelta(days=9),
+        )
+        self.assertEqual(status, "updated")
+        self.assertEqual(extra["previous"]["first_example"]["original"], "Ich spreche mit mein Chef.")
+        self.assertEqual(extra["previous"]["first_example"]["seen_at"], dna.iso(BASE_TIME))
+        self.assertEqual(extra["previous"]["last_example"]["original"], "Ich fahre mit mein Auto.")
+
+    def test_observe_returns_the_last_wrong_sentence(self):
+        mistake, _, _ = self.record_example()
+        results = self.store.observe([mistake["id"]], context="mit unseren Kunden", at=BASE_TIME + timedelta(hours=3))
+        self.assertEqual(results[0]["last_mistake"]["original"], "Ich spreche mit mein Chef.")
+        self.assertEqual(results[0]["last_mistake"]["seen_at"], dna.iso(BASE_TIME))
+
+    def test_timeline_footer_marks_an_unreviewed_pattern_as_new(self):
+        mistake, _, _ = self.record_example()
+        text = dna.render_show_text({"mistake": self.store.show(mistake["id"])})
+        self.assertIn("neu · 1 wrong · 0 right · step 0/6", text)
+        self.assertNotIn("%", text)
 
 
 if __name__ == "__main__":

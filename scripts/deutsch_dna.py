@@ -246,6 +246,22 @@ def correct_total(mistake: dict[str, Any]) -> int:
     return int(mistake.get("correct_uses", 0)) + review_passes(mistake)
 
 
+def evidence(mistake: dict[str, Any]) -> int:
+    """How often the learner had a chance to show progress: graded reviews plus correct uses."""
+    return int(mistake.get("review_attempts", 0)) + int(mistake.get("correct_uses", 0))
+
+
+def example_view(example: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not example:
+        return None
+    return {
+        "original": example.get("original"),
+        "corrected": example.get("corrected"),
+        "seen_at": example.get("seen_at"),
+        "context": example.get("context"),
+    }
+
+
 def accuracy_percent(correct: int, errors: int) -> int:
     """Laplace-smoothed share of correct productions among all tracked productions."""
     return round(100 * (correct + 1) / (correct + errors + 2))
@@ -264,6 +280,7 @@ def compact(mistake: dict[str, Any]) -> dict[str, Any]:
         "correct_uses": int(mistake.get("correct_uses", 0)),
         "right": correct_total(mistake),
         "accuracy_percent": accuracy_percent(correct_total(mistake), occurrences),
+        "new": evidence(mistake) == 0,
         "review_step": int(mistake.get("review_step", 0)),
         "review_steps_total": len(REVIEW_INTERVALS),
         "next_review": mistake.get("next_review"),
@@ -578,11 +595,14 @@ class StateStore:
         extra: dict[str, Any] = {"resolved_by": resolved_by}
 
         if existing:
+            earlier = existing.get("examples") or []
             extra["previous"] = {
                 "last_seen": existing.get("last_seen"),
                 "review_step": int(existing.get("review_step", 0)),
                 "status": existing.get("status"),
                 "occurrences": int(existing.get("occurrences", 0)),
+                "first_example": example_view(earlier[0] if earlier else None),
+                "last_example": example_view(earlier[-1] if earlier else None),
             }
             was_mastered = existing.get("status") == "mastered"
             _snapshot(existing, "record", moment)
@@ -686,6 +706,7 @@ class StateStore:
                     "review_step": mistake.get("review_step", 0),
                     "next_review": mistake.get("next_review"),
                     "mastered": mistake.get("status") == "mastered",
+                    "last_mistake": example_view((mistake.get("examples") or [None])[-1]),
                 }
             )
         _atomic_write(self.mistakes_path, document)
@@ -960,7 +981,16 @@ class StateStore:
         for mistake in mistakes:
             bucket = categories.setdefault(
                 mistake["category"],
-                {"patterns": 0, "active": 0, "mastered": 0, "errors": 0, "correct": 0, "due": 0, "mastery_total": 0.0},
+                {
+                    "patterns": 0,
+                    "active": 0,
+                    "mastered": 0,
+                    "errors": 0,
+                    "correct": 0,
+                    "evidence": 0,
+                    "due": 0,
+                    "mastery_total": 0.0,
+                },
             )
             is_active = mistake.get("status") == "active"
             next_review = _safe_moment(mistake.get("next_review"))
@@ -969,12 +999,17 @@ class StateStore:
             bucket["mastered"] += int(mistake.get("status") == "mastered")
             bucket["errors"] += int(mistake.get("occurrences", 0))
             bucket["correct"] += correct_total(mistake)
+            bucket["evidence"] += evidence(mistake)
             bucket["due"] += int(is_active and next_review is not None and next_review <= moment)
             bucket["mastery_total"] += float(mistake.get("mastery_score", 0.0))
         for bucket in categories.values():
             bucket["accuracy_percent"] = accuracy_percent(bucket["correct"], bucket["errors"])
             bucket["mastery_percent"] = round(100 * bucket.pop("mastery_total") / max(1, bucket["patterns"]))
-            bucket["weak"] = bucket["accuracy_percent"] < WEAK_ACCURACY_THRESHOLD and bucket["errors"] >= 2
+            # Without a single review or correct use there is nothing to measure yet.
+            bucket["new"] = bucket["evidence"] == 0
+            bucket["weak"] = (
+                not bucket["new"] and bucket["accuracy_percent"] < WEAK_ACCURACY_THRESHOLD and bucket["errors"] >= 2
+            )
 
         # A cluster is a family of related patterns that keep failing. Breadth (how many
         # different members failed recently) outranks depth: many members failing means the
@@ -1028,6 +1063,7 @@ class StateStore:
             "categories": categories,
             "clusters": clusters,
             "cluster_window_days": CLUSTER_WINDOW.days,
+            "recent_errors_total": sum(errors_between(item, window_start, moment) for item in mistakes),
             "weakest_patterns": weakest,
             "due_patterns": due_rows[:5],
         }
@@ -1362,12 +1398,19 @@ def _join_limited(items: list[str], limit: int, total: int | None = None) -> str
     return shown
 
 
-def _cluster_detail(cluster: dict[str, Any]) -> str:
-    size = len(cluster["patterns"])
-    recent = cluster.get("recent_patterns", 0)
-    if recent:
-        return f"{recent} of {size} related patterns wrong in the last {CLUSTER_WINDOW.days} days"
-    return f"{size} related patterns · {_plural(cluster['occurrences'], 'error')}"
+def _cluster_detail(cluster: dict[str, Any], recent_total: int) -> str:
+    recent_errors = cluster.get("recent_errors", 0)
+    if recent_errors and recent_total:
+        return (
+            f"{recent_errors} of your {recent_total} mistakes in {CLUSTER_WINDOW.days} days · "
+            f"{_plural(cluster.get('recent_patterns', 0), 'related pattern')}"
+        )
+    return f"{_plural(len(cluster['patterns']), 'related pattern')} · {_plural(cluster['occurrences'], 'error')}"
+
+
+def _score(accuracy: int, is_new: bool) -> str:
+    """Fixed-width score column: a bar with a percentage, or "neu" when nothing is measured yet."""
+    return "neu".ljust(15) if is_new else f"{render_bar(accuracy)} {accuracy:>3}%"
 
 
 def render_summary_text(summary: dict[str, Any]) -> str:
@@ -1392,7 +1435,7 @@ def render_summary_text(summary: dict[str, Any]) -> str:
     for category in sorted(categories, key=category_rank):
         bucket = categories[category]
         line = (
-            f"{_label(category):<16}{render_bar(bucket['accuracy_percent'])} {bucket['accuracy_percent']:>3}%   "
+            f"{_label(category):<16}{_score(bucket['accuracy_percent'], bucket.get('new', False))}   "
             f"{_plural(bucket['patterns'], 'pattern'):<10} · {bucket['mastered']} mastered · "
             f"{bucket['errors']} wrong · {bucket['correct']} right"
         )
@@ -1400,17 +1443,18 @@ def render_summary_text(summary: dict[str, Any]) -> str:
             line += "   ← weak"
         lines.append(line)
     clusters = summary["clusters"]
+    recent_total = summary.get("recent_errors_total", 0)
     if clusters:
         top = clusters[0]
         lines.append("")
-        lines.append(f"Root cause: {_label(top['category'])} · {_cluster_detail(top)}")
+        lines.append(f"Root cause: {_label(top['category'])} · {_cluster_detail(top, recent_total)}")
         for pattern in top["patterns"][:4]:
             lines.append(f"  → {pattern}")
         if len(top["patterns"]) > 4:
             lines.append(f"  → +{len(top['patterns']) - 4} more")
         for cluster in clusters[1:2]:
-            lines.append(f"Also: {_label(cluster['category'])} · {_cluster_detail(cluster)}")
-    weakest = summary["weakest_patterns"][:3]
+            lines.append(f"Also: {_label(cluster['category'])} · {_cluster_detail(cluster, recent_total)}")
+    weakest = [row for row in summary["weakest_patterns"] if not row.get("new")][:3]
     if weakest:
         lines.append("")
         lines.append("Weakest patterns")
@@ -1541,11 +1585,9 @@ def render_show_text(result: dict[str, Any]) -> str:
     for stamp, _, text in events[hidden:]:
         lines.append(f"{stamp[:10]}  {text}")
     progress = "mastered" if mastered else f"step {row['review_step']}/{row['review_steps_total']}"
+    score = "neu" if row["new"] else f"{render_bar(row['accuracy_percent'])} {row['accuracy_percent']}%"
     lines.append("")
-    lines.append(
-        f"{render_bar(row['accuracy_percent'])} {row['accuracy_percent']}% · "
-        f"{row['occurrences']} wrong · {row['right']} right · {progress}"
-    )
+    lines.append(f"{score} · {row['occurrences']} wrong · {row['right']} right · {progress}")
     return "\n".join(lines)
 
 

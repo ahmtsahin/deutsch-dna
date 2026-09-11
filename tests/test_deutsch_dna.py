@@ -39,12 +39,15 @@ class FakeResponse:
 
 class StoreTestCase(unittest.TestCase):
     def setUp(self):
+        self._environment = mock.patch.dict(os.environ, {"DEUTSCHDNA_UTC_OFFSET": "+00:00"})
+        self._environment.start()
         self._temporary = tempfile.TemporaryDirectory(prefix="deutschdna-test-")
         self.home = Path(self._temporary.name)
         self.store = dna.StateStore(self.home)
 
     def tearDown(self):
         self._temporary.cleanup()
+        self._environment.stop()
 
     def record_example(self, at=BASE_TIME, event_id=None, **overrides):
         params = dict(
@@ -507,11 +510,14 @@ class CorrectionTests(unittest.TestCase):
 
 class CliTests(unittest.TestCase):
     def setUp(self):
+        self._environment = mock.patch.dict(os.environ, {"DEUTSCHDNA_UTC_OFFSET": "+00:00"})
+        self._environment.start()
         self._temporary = tempfile.TemporaryDirectory(prefix="deutschdna-cli-")
         self.home = self._temporary.name
 
     def tearDown(self):
         self._temporary.cleanup()
+        self._environment.stop()
 
     def run_cli(self, *arguments: str) -> str:
         buffer = io.StringIO()
@@ -880,6 +886,104 @@ class CallbackDataTests(StoreTestCase):
         text = dna.render_show_text({"mistake": self.store.show(mistake["id"])})
         self.assertIn("neu · 1 wrong · 0 right · step 0/6", text)
         self.assertNotIn("%", text)
+
+
+class LocalTimeAndCardTests(StoreTestCase):
+    def use_offset(self, offset: str) -> None:
+        patcher = mock.patch.dict(os.environ, {"DEUTSCHDNA_UTC_OFFSET": offset})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def print_cli(self, *arguments: str) -> str:
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = dna.main(["--home", str(self.home), *arguments])
+        self.assertEqual(code, 0, buffer.getvalue())
+        return buffer.getvalue()
+
+    def test_outputs_carry_local_times_next_to_utc(self):
+        self.use_offset("+02:00")
+        mistake, _, _ = self.record_example()
+        row = self.store.list()[0]
+        self.assertEqual(row["next_review"], "2026-09-11T12:00:00Z")
+        self.assertEqual(row["next_review_local"], "2026-09-11T14:00:00+02:00")
+        self.assertEqual(row["last_example"]["seen_at_local"], "2026-09-10T14:00:00+02:00")
+        _, _, extra = self.record_example(
+            original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(days=1)
+        )
+        self.assertEqual(extra["previous"]["first_example"]["seen_at_local"], "2026-09-10T14:00:00+02:00")
+        with self.assertRaises(dna.DeutschDNAError):
+            with mock.patch.dict(os.environ, {"DEUTSCHDNA_UTC_OFFSET": "two hours"}):
+                dna.local_zone()
+
+    def test_streak_counts_local_days(self):
+        self.use_offset("+02:00")
+        self.record_example(at=datetime(2026, 9, 10, 23, 30, tzinfo=timezone.utc))
+        self.record_example(
+            original="Ich fahre mit mein Auto.",
+            corrected="Ich fahre mit meinem Auto.",
+            at=datetime(2026, 9, 11, 9, 0, tzinfo=timezone.utc),
+        )
+        recap = self.store.recap(at=datetime(2026, 9, 11, 10, 0, tzinfo=timezone.utc))
+        self.assertEqual(recap["streak_days"], 1)
+        self.assertEqual(recap["days_since_last_activity"], 0)
+        self.assertEqual(recap["last_activity_local"], "2026-09-11T11:00:00+02:00")
+
+    def test_card_shows_streak_recurrence_and_the_local_review_time(self):
+        self.use_offset("+02:00")
+        self.store.init_profile(name="Ahmet", level="B2", native_language="tr", at=BASE_TIME)
+        self.record_example()
+        self.record_example(
+            category="verb",
+            pattern="sich treffen is reflexive",
+            original="Ich habe mit meinem Freund getroffen.",
+            corrected="Ich habe mich mit meinem Freund getroffen.",
+            at=BASE_TIME + timedelta(minutes=10),
+        )
+        self.record_example(
+            original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(hours=2)
+        )
+        recap = self.store.recap(at=datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc))
+        self.assertEqual(recap["schedule"]["later_today"], 2)
+        self.assertEqual(
+            recap["card"],
+            "DeutschDNA · Ahmet · B2 · 1 Tag in Folge · 2 Muster · 0 gemeistert\n"
+            "Zuletzt zurück: mit + dative ×2 · heute ab 14:10 warten 2 Wiederholungen auf dich",
+        )
+        printed = self.print_cli("recap", "--format", "card", "--at", "2026-09-11T08:00:00Z")
+        self.assertEqual(printed.strip(), recap["card"])
+        due = self.store.recap(at=datetime(2026, 9, 11, 15, 0, tzinfo=timezone.utc))
+        self.assertTrue(due["card"].endswith("2 Wiederholungen jetzt fällig"))
+
+    def test_card_for_a_learner_who_paused(self):
+        self.use_offset("+02:00")
+        mistake, _, _ = self.record_example()
+        self.store.grade(mistake["id"], result="pass", at=BASE_TIME + timedelta(days=1))
+        later = self.store.recap(at=BASE_TIME + timedelta(days=1, hours=6))
+        self.assertTrue(later["card"].endswith("nächste Wiederholung am 14.09. um 14:00"))
+        paused = self.store.recap(at=BASE_TIME + timedelta(days=9))
+        self.assertIn("zuletzt vor 8 Tagen", paused["card"])
+        self.assertTrue(paused["card"].endswith("1 Wiederholung jetzt fällig"))
+
+    def test_card_before_any_history(self):
+        recap = self.store.recap(at=BASE_TIME)
+        self.assertEqual(
+            recap["card"],
+            "DeutschDNA · Learner\nNoch keine Einträge. Schreib ein paar Sätze auf Deutsch, dann entsteht deine DNA.",
+        )
+        self.assertFalse(recap["full_profile_due"])
+
+    def test_full_profile_is_due_weekly_after_new_activity(self):
+        self.record_example()
+        self.assertTrue(self.store.recap(at=BASE_TIME + timedelta(hours=1))["full_profile_due"])
+        self.print_cli("summary", "--format", "text", "--at", "2026-09-10T13:00:00Z")
+        self.assertFalse(self.store.recap(at=BASE_TIME + timedelta(hours=2))["full_profile_due"])
+        self.print_cli("summary", "--at", "2026-09-10T14:00:00Z")
+        self.assertFalse(self.store.recap(at=BASE_TIME + timedelta(days=8))["full_profile_due"])
+        self.record_example(
+            original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(days=8)
+        )
+        self.assertTrue(self.store.recap(at=BASE_TIME + timedelta(days=8, hours=1))["full_profile_due"])
 
 
 if __name__ == "__main__":

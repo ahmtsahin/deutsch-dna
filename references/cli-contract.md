@@ -1,6 +1,6 @@
 # CLI contract
 
-All commands print UTF-8 JSON to stdout regardless of the console code page. `recap`, `summary`, `due`, `list`, and `show` also accept `--format text` for a human-readable rendering meant to be shown verbatim. Errors print JSON to stderr and exit with status 2.
+All commands print UTF-8 JSON to stdout regardless of the console code page. `recap`, `summary`, `due`, `list`, and `show` also accept `--format text` for a human-readable rendering meant to be shown verbatim, and `recap --format card` prints the two German status lines that open a session. Errors print JSON to stderr and exit with status 2.
 
 ## State
 
@@ -11,6 +11,8 @@ The state directory is selected in this order:
 3. `~/.deutschdna`.
 
 The CLI creates `profile.json`, `mistakes.json`, and `sessions.json` atomically. They are plain JSON for portability, but integrations must change them only through the CLI (`forget`, `merge`, `rename`), never by hand. State from schema version 1 is upgraded on read; pattern IDs are kept.
+
+Stored times are UTC. Outputs add `*_local` twins such as `seen_at_local`, `next_review_local`, and `last_activity_local` in the machine's time zone, or in `DEUTSCHDNA_UTC_OFFSET` (for example `+02:00`) when it is set. Day-based values follow the local calendar: streaks, today, yesterday, and days since the last activity. Rendering `summary --format text` records `last_full_profile_at` in the profile.
 
 ## Commands
 
@@ -28,7 +30,7 @@ The CLI creates `profile.json`, `mistakes.json`, and `sessions.json` atomically.
 | `merge` | Fold the source pattern into the target: counts add up, histories interleave, the source key becomes an alias of the target. |
 | `rename` | Change a pattern's name, category, or rule; the old key stays as an alias. Refuses to collide with an existing pattern and points to `merge`. |
 | `summary` | The FehlerDNA profile: per-category accuracy, root-cause clusters, weakest and due patterns, streak. |
-| `recap` | Activity in the last `--days` (default 7), for a session opener. |
+| `recap` | The session opener: activity in the last `--days` (default 7), totals, `schedule` (due now, later today, next review in local time), `full_profile_due`, and `card`, the two status lines. |
 | `verify` | Minimality analysis plus a local LanguageTool check. |
 | `roleplay-start`, `roleplay-finish` | Store a roleplay session; the duration is derived from the two timestamps unless `--duration-seconds` overrides it. |
 
@@ -76,6 +78,7 @@ The successful review sequence is 1, 3, 7, 14, 30, then 60 days. Recording a rec
 - A category is `weak` when it is not new, its accuracy is below 60%, and it has at least two errors.
 - A *cluster* (shown as **Root cause**) is a category with at least two active patterns and three errors among them. Clusters are ranked by how many different patterns in the family failed in the last 30 days (`recent_patterns`), then by recent errors, then by total errors. Breadth outranks depth: four different verb-plus-preposition mistakes say more about the rule than one pattern missed four times. The **Root cause** line states the family's share of all mistakes in the same 30 days (`recent_errors` of `recent_errors_total`).
 - `mastery_percent` is the average review-ladder position per category (0–100), kept for integrations.
-- `streak_days` counts consecutive UTC days with any recorded activity, ending today or yesterday.
+- `streak_days` counts consecutive local days with any recorded activity, ending today or yesterday.
+- `full_profile_due` is true when the learner has activity and has never seen the full profile card, or last saw it at least 7 days ago and has been active since.
 
 Percentages describe tracked patterns only. A category with no recorded mistakes does not appear; it is unknown, not 0%. The text profile shows German category names (`Kasus`, `Präpositionen`, `Endungen`, …); JSON keeps the English category IDs.

@@ -200,10 +200,17 @@ def main(argv: list[str] | None = None) -> int:
     warten_id = dna.mistake_id("preposition", "warten auf + accusative")
     print("DeutschDNA demo: four months of one learner, replayed through the real engine.")
     print(f"State directory: {home}")
-    for command in (["recap"], ["summary"], ["show", mit_id], ["show", warten_id], ["due"]):
+    screens = (
+        ["recap", "--format", "card"],
+        ["summary", "--format", "text"],
+        ["show", mit_id, "--format", "text"],
+        ["show", warten_id, "--format", "text"],
+        ["due", "--format", "text"],
+    )
+    for command in screens:
         print()
-        print(f"$ python scripts/deutsch_dna.py {' '.join(command)} --format text")
-        dna.main(["--home", str(home), *command, "--format", "text"])
+        print(f"$ python scripts/deutsch_dna.py {' '.join(command)}")
+        dna.main(["--home", str(home), *command])
     return 0
 
 

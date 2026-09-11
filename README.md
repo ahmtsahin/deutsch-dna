@@ -16,23 +16,19 @@ The demo replays four months of one learner through the real engine. The story o
 
 ### It remembers you
 
-```text
-Willkommen zurück, Ahmet.
-Last practice: today · streak 17 days
-Last 7 days: 6 mistakes (2 new, 4 repeated) · 10 reviews (8 passed) · 3 correct uses · 1 roleplay
-Came back: weil sends finite verb to end ×2 · warten auf + accusative · +2 more
-Mastered: mit + dative · -ung nouns are feminine
-3 mistakes due for review · 5-minute challenge?
-```
-
-Then, instead of a menu, the tutor opens with one of the learner's own sentences and a new situation that calls for the same structure:
+Every session opens the same way, never with a menu: two status lines printed by the CLI, one of the learner's own sentences, a new situation that asks for the same structure, and one line of what else to ask for.
 
 ```text
-Gestern hast du geschrieben: „Das ist ein wichtige Termin."
+DeutschDNA · Ahmet · B2 · 17 Tage in Folge · 12 Muster · 2 gemeistert
+Zuletzt zurück: weil sends finite verb to end ×2 · 3 Wiederholungen jetzt fällig
+
+Gestern um 10:31 hast du geschrieben: „Das ist ein wichtige Termin."
 Deine Kollegin fragt, was du am Wochenende gekauft hast. Beschreib es in einem Satz.
+
+Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?"
 ```
 
-Get it right, and yesterday's sentence and today's appear side by side. Get it wrong, and the mistake is caught on the spot. Either way the learner sees that the tutor remembers.
+The status lines are real CLI output for the demo learner, with times in the local time zone. The rest follows the format the skill asks the agent to use. Get it right, and the old sentence and the new one appear side by side. Get it wrong, and the mistake is caught on the spot. Either way the learner sees that the tutor remembers.
 
 ### It finds the root cause, not the symptom
 
@@ -159,7 +155,7 @@ See the official [Claude Code skill guide](https://code.claude.com/docs/en/skill
 
 ## Use it
 
-Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just write German and ask for feedback. It talks to you in German at your level. On the first run it asks for five or six sentences about your week and shows your first DeutschDNA: no scores yet, just the root cause behind most of your mistakes. From then on, every conversation opens with one of your own sentences and a new situation that asks for the same structure.
+Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just write German and ask for feedback. It talks to you in German at your level. On the first run it asks for five or six sentences about your week and shows your first DeutschDNA: no scores yet, just the root cause behind most of your mistakes. From then on, every conversation opens with two status lines, one of your own sentences, and a new situation that asks for the same structure. A one-line hint lists what else you can ask for, and once a week the full profile comes back as a Wochenbilanz.
 
 - **Correct my German.** Minimal correction, the reason, a verification label, and the recurrence callback when a mistake comes back.
 - **Let's review.** One due mistake at a time, each in a new situation.
@@ -179,7 +175,7 @@ python scripts/deutsch_dna.py summary --format text
 
 | Command | What it does |
 | --- | --- |
-| `recap` | What happened recently: for the session opener |
+| `recap` | The session opener; `--format card` prints the two German status lines |
 | `record` | File a mistake under its root cause, or count a recurrence |
 | `observe` | Count a correct, unprompted use of a tracked pattern |
 | `due`, `grade` | Spaced-repetition reviews |

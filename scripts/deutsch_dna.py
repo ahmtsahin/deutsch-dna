@@ -38,6 +38,7 @@ CLUSTER_MIN_OCCURRENCES = 3
 WEAK_ACCURACY_THRESHOLD = 60
 CLUSTER_WINDOW = timedelta(days=30)
 TIMELINE_LIMIT = 16
+FULL_PROFILE_INTERVAL_DAYS = 7
 REVIEW_CONTEXT = "spaced-repetition review"
 DEFAULT_LANGUAGETOOL_URL = "http://localhost:8081/v2/check"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -163,6 +164,33 @@ def iso(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
+def local_zone() -> timezone | None:
+    """The learner's time zone: DEUTSCHDNA_UTC_OFFSET such as +02:00, or the system zone by default."""
+    configured = os.environ.get("DEUTSCHDNA_UTC_OFFSET", "").strip()
+    if not configured:
+        return None
+    match = re.fullmatch(r"([+-])(\d{1,2}):?(\d{2})", configured)
+    if not match:
+        raise DeutschDNAError(f"Invalid DEUTSCHDNA_UTC_OFFSET '{configured}'; use a form like +02:00")
+    offset = timedelta(hours=int(match.group(2)), minutes=int(match.group(3)))
+    return timezone(offset if match.group(1) == "+" else -offset)
+
+
+def to_local(moment: datetime) -> datetime:
+    """Stored times are UTC; everything shown to the learner is local."""
+    zone = local_zone()
+    return moment.astimezone(zone) if zone else moment.astimezone()
+
+
+def local_date(moment: datetime) -> date:
+    return to_local(moment).date()
+
+
+def local_iso(stamp: str | None) -> str | None:
+    parsed = _safe_moment(stamp)
+    return to_local(parsed).isoformat() if parsed else None
+
+
 def _safe_moment(value: str | None) -> datetime | None:
     if not value:
         return None
@@ -258,6 +286,7 @@ def example_view(example: dict[str, Any] | None) -> dict[str, Any] | None:
         "original": example.get("original"),
         "corrected": example.get("corrected"),
         "seen_at": example.get("seen_at"),
+        "seen_at_local": local_iso(example.get("seen_at")),
         "context": example.get("context"),
     }
 
@@ -284,8 +313,9 @@ def compact(mistake: dict[str, Any]) -> dict[str, Any]:
         "review_step": int(mistake.get("review_step", 0)),
         "review_steps_total": len(REVIEW_INTERVALS),
         "next_review": mistake.get("next_review"),
+        "next_review_local": local_iso(mistake.get("next_review")),
         "last_seen": mistake.get("last_seen"),
-        "last_example": examples[-1] if examples else None,
+        "last_example": example_view(examples[-1]) if examples else None,
     }
 
 
@@ -540,6 +570,12 @@ class StateStore:
         profile["updated_at"] = iso(moment)
         _atomic_write(self.profile_path, profile)
         return profile
+
+    def mark_profile_shown(self, *, at: datetime | None = None) -> None:
+        """Remember when the learner last saw the full profile card, for the weekly Wochenbilanz."""
+        profile = self._profile()
+        profile["last_full_profile_at"] = iso(at or utc_now())
+        _atomic_write(self.profile_path, profile)
 
     # ---- recording
 
@@ -1046,8 +1082,8 @@ class StateStore:
         weakest = sorted(active_rows, key=lambda row: (row["accuracy_percent"], -row["occurrences"], row["pattern"]))[:5]
         due_rows = [compact(item) for item in self.due(at=moment, limit=len(mistakes))]
         moments = [value for value in _event_moments(mistakes, sessions) if value <= moment]
-        days = {value.date() for value in moments}
-        today = moment.date()
+        days = {local_date(value) for value in moments}
+        today = local_date(moment)
         return {
             "as_of": iso(moment),
             "profile": profile_view(profile),
@@ -1124,18 +1160,36 @@ class StateStore:
         due_rows = [compact(item) for item in self.due(at=moment, limit=len(mistakes))]
         moments = [value for value in _event_moments(mistakes, sessions) if value <= moment]
         last = max(moments) if moments else None
-        day_set = {value.date() for value in moments}
+        day_set = {local_date(value) for value in moments}
         active_rows = [compact(item) for item in mistakes if item.get("status") == "active"]
         weakest = sorted(active_rows, key=lambda row: (row["accuracy_percent"], -row["occurrences"], row["pattern"]))
         next_focus = due_rows[0] if due_rows else (weakest[0] if weakest else None)
-        return {
+        upcoming = sorted(
+            parsed
+            for parsed in (_safe_moment(item.get("next_review")) for item in mistakes if item.get("status") == "active")
+            if parsed is not None and parsed > moment
+        )
+        later_today = [value for value in upcoming if local_date(value) == local_date(moment)]
+        schedule = {
+            "due_now": len(due_rows),
+            "later_today": len(later_today),
+            "later_today_first_local": to_local(later_today[0]).isoformat() if later_today else None,
+            "next_local": to_local(upcoming[0]).isoformat() if upcoming else None,
+        }
+        shown = _safe_moment(profile.get("last_full_profile_at"))
+        full_profile_due = last is not None and (
+            shown is None
+            or (moment - shown >= timedelta(days=FULL_PROFILE_INTERVAL_DAYS) and last > shown)
+        )
+        result = {
             "as_of": iso(moment),
             "window_days": window,
             "since": iso(since),
             "profile": profile_view(profile),
             "last_activity_at": iso(last) if last else None,
-            "days_since_last_activity": (moment.date() - last.date()).days if last else None,
-            "streak_days": streak_days(day_set, moment.date()),
+            "last_activity_local": to_local(last).isoformat() if last else None,
+            "days_since_last_activity": (local_date(moment) - local_date(last)).days if last else None,
+            "streak_days": streak_days(day_set, local_date(moment)),
             "errors": {"total": errors_total, "new_patterns": len(new_patterns), "recurrences": recurrences},
             "new_patterns": new_patterns,
             "recurring_patterns": recurring[:5],
@@ -1147,7 +1201,13 @@ class StateStore:
             "due_now": len(due_rows),
             "due_patterns": due_rows[:5],
             "next_focus": next_focus,
+            "active_patterns": len(active_rows),
+            "mastered_total": sum(item.get("status") == "mastered" for item in mistakes),
+            "schedule": schedule,
+            "full_profile_due": full_profile_due,
         }
+        result["card"] = render_recap_card(result)
+        return result
 
     # ---- roleplay
 
@@ -1503,6 +1563,46 @@ def render_recap_text(recap: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def render_recap_card(recap: dict[str, Any]) -> str:
+    """Two German status lines that open a session. Every number and time comes from the recap."""
+    profile = recap["profile"]
+    head = ["DeutschDNA", _display_name(profile)]
+    level = profile.get("level")
+    if level and level != "unspecified":
+        head.append(level)
+    if recap.get("last_activity_at") is None:
+        return " · ".join(head) + "\nNoch keine Einträge. Schreib ein paar Sätze auf Deutsch, dann entsteht deine DNA."
+    streak = recap["streak_days"]
+    if streak:
+        head.append(f"{streak} {'Tag' if streak == 1 else 'Tage'} in Folge")
+    else:
+        head.append(f"zuletzt vor {recap['days_since_last_activity']} Tagen")
+    head.append(f"{recap['active_patterns']} Muster")
+    head.append(f"{recap['mastered_total']} gemeistert")
+
+    details = []
+    if recap["recurring_patterns"]:
+        top = recap["recurring_patterns"][0]
+        details.append(f"Zuletzt zurück: {top['pattern']}" + (f" ×{top['count']}" if top["count"] > 1 else ""))
+    elif recap["mastered"]:
+        details.append(f"Gemeistert: {recap['mastered'][0]}")
+    schedule = recap["schedule"]
+    if schedule["due_now"]:
+        count = schedule["due_now"]
+        details.append(f"{count} {'Wiederholung' if count == 1 else 'Wiederholungen'} jetzt fällig")
+    elif schedule["later_today"]:
+        count = schedule["later_today"]
+        start = schedule["later_today_first_local"][11:16]
+        verb, noun = ("wartet", "Wiederholung") if count == 1 else ("warten", "Wiederholungen")
+        details.append(f"heute ab {start} {verb} {count} {noun} auf dich")
+    elif schedule["next_local"]:
+        upcoming = datetime.fromisoformat(schedule["next_local"])
+        details.append(f"nächste Wiederholung am {upcoming:%d.%m.} um {upcoming:%H:%M}")
+    else:
+        details.append("keine Wiederholung geplant")
+    return " · ".join(head) + "\n" + " · ".join(details)
+
+
 def render_due_text(result: dict[str, Any]) -> str:
     if not result["mistakes"]:
         return "Nothing due right now."
@@ -1528,7 +1628,7 @@ def render_list_text(result: dict[str, Any]) -> str:
     lines = [header]
     for row in rows:
         pattern = row["pattern"] if len(row["pattern"]) <= 40 else row["pattern"][:39] + "…"
-        next_review = (row["next_review"] or "")[:10] or "-"
+        next_review = (row.get("next_review_local") or "")[:10] or "-"
         lines.append(
             f"{row['id']:<15}{row['status']:<10}{row['category']:<13}{pattern:<42}"
             f"{row['occurrences']:>6}{row['right']:>6}  {row['review_step']}/{row['review_steps_total']:<3} {next_review:<10}"
@@ -1583,7 +1683,7 @@ def render_show_text(result: dict[str, Any]) -> str:
     if hidden:
         lines.append(f"… {_plural(hidden, 'earlier event')}")
     for stamp, _, text in events[hidden:]:
-        lines.append(f"{stamp[:10]}  {text}")
+        lines.append(f"{(local_iso(stamp) or stamp)[:10]}  {text}")
     progress = "mastered" if mastered else f"step {row['review_step']}/{row['review_steps_total']}"
     score = "neu" if row["new"] else f"{render_bar(row['accuracy_percent'])} {row['accuracy_percent']}%"
     lines.append("")
@@ -1598,6 +1698,7 @@ TEXT_RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "list": render_list_text,
     "show": render_show_text,
 }
+CARD_RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {"recap": render_recap_card}
 
 
 # --------------------------------------------------------------------------- CLI
@@ -1696,7 +1797,12 @@ def build_parser() -> argparse.ArgumentParser:
     recap_parser = subparsers.add_parser("recap", help="Summarize recent activity for a session opener")
     recap_parser.add_argument("--days", type=int, default=RECENT_DAYS)
     recap_parser.add_argument("--at", help="ISO-8601 recap time")
-    _add_format(recap_parser)
+    recap_parser.add_argument(
+        "--format",
+        choices=("json", "text", "card"),
+        default="json",
+        help="json for agents, text for a summary, card for the two-line German session header",
+    )
 
     verify_parser = subparsers.add_parser("verify", help="Check minimality and query a local LanguageTool server")
     verify_parser.add_argument("--original", required=True)
@@ -1803,7 +1909,11 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         )
         return {"status": "renamed", "previous_id": outcome["previous_id"], "mistake": public(outcome["mistake"])}
     if command == "summary":
-        return store.summary(at=parse_moment(arguments.at))
+        moment = parse_moment(arguments.at)
+        result = store.summary(at=moment)
+        if arguments.format == "text":
+            store.mark_profile_shown(at=moment)
+        return result
     if command == "recap":
         return store.recap(days=arguments.days, at=parse_moment(arguments.at))
     if command == "verify":
@@ -1836,7 +1946,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         arguments = parser.parse_args(argv)
         result = run(arguments)
-        renderer = TEXT_RENDERERS.get(arguments.command) if getattr(arguments, "format", "json") == "text" else None
+        output_format = getattr(arguments, "format", "json")
+        renderers = {"text": TEXT_RENDERERS, "card": CARD_RENDERERS}.get(output_format, {})
+        renderer = renderers.get(arguments.command)
         if renderer:
             print(renderer(result))
         else:

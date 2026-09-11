@@ -14,7 +14,7 @@ The user's instructions take precedence over this skill. Never upload learner hi
 
 ## Speak German
 
-Talk to the learner in German, pitched to their level (`profile.level`): greetings, tasks, recaps, and praise. From B1 upwards, explain grammar in simple German too. Below B1, when the learner asks, or when a German explanation would not land, explain in their first language (`profile.native_language`), for example Turkish for `tr`. Use English only if it is their first language or they ask for it. CLI cards are shown exactly as the CLI prints them.
+Talk to the learner in German, pitched to their level (`profile.level`): greetings, tasks, recaps, praise, and the short status line you write before running a command. From B1 upwards, explain grammar in simple German too. Below B1, when the learner asks, or when a German explanation would not land, explain in their first language (`profile.native_language`), for example Turkish for `tr`. Use English only if it is their first language or they ask for it. CLI cards are shown exactly as the CLI prints them.
 
 ## Locate the runtime
 
@@ -24,7 +24,7 @@ Treat the directory containing this `SKILL.md` as `<skill-root>`. Use:
 python <skill-root>/scripts/deutsch_dna.py <command>
 ```
 
-Use `python3` where `python` is missing. The CLI stores UTF-8 JSON under `DEUTSCHDNA_HOME`, defaulting to `~/.deutschdna`. Never edit those JSON files by hand; use `undo`, `forget`, `merge`, and `rename`. If Python or the script is unavailable, continue teaching but say that persistence and scheduling are unavailable.
+Use `python3` where `python` is missing. The CLI stores UTF-8 JSON under `DEUTSCHDNA_HOME`, defaulting to `~/.deutschdna`. Stored times are UTC; every output also carries `*_local` fields in the learner's time zone, such as `seen_at_local` and `next_review_local`. Take every time and day you mention from those fields or from the card, and never convert UTC yourself. Never edit those JSON files by hand; use `undo`, `forget`, `merge`, and `rename`. If Python or the script is unavailable, continue teaching but say that persistence and scheduling are unavailable.
 
 ## Open with the learner's own sentence
 
@@ -35,17 +35,21 @@ python <skill-root>/scripts/deutsch_dna.py recap
 python <skill-root>/scripts/deutsch_dna.py list --status active
 ```
 
-If `last_activity_at` is null, run **First session** instead. If the learner's first message already asks for something specific, do that and keep the recap to one line. Otherwise open with a callback, never with a menu of options:
+If `last_activity_at` is null, run **First session** instead. If the learner's first message already asks for something specific, show the two `card` lines and then do what they asked. Otherwise open in this order, never with a menu of options:
 
-1. Choose the target pattern: the first entry in `due_patterns`; if nothing is due, the active pattern whose `last_example` is the most recent.
-2. Quote the learner's own sentence from that pattern's `last_example`, and say when they wrote it. Do not show the correction.
-3. In one or two lines, put them in a new, natural situation that makes them produce the same structure. Do not name the rule.
-4. Add at most one line of recap: streak, what came back, what was mastered, how many reviews are due and when.
+1. **Status.** The two lines of `card` from the recap, exactly as printed.
+2. **Callback.** Choose the target pattern: the first entry in `due_patterns`; if nothing is due, the active pattern whose `last_example` is the most recent. Quote the learner's sentence from that `last_example` with the day and the time from `seen_at_local`, without the correction. Then, in one or two lines, put them in a new, natural situation that makes them produce the same structure. Make the structure unavoidable: if a correct answer could side-step it, change the situation. Do not name the rule.
+3. **Hint.** One line, exactly: `Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?"`
 
 ```text
-Gestern hast du geschrieben: „Ich hatte gern ein Pizza"
-Du bist wieder im Restaurant. Der Kellner fragt: „Was darf es sein?" Bestell ein Getränk und einen Nachtisch.
-2 Tage in Folge · heute ab 15:42 warten 5 Wiederholungen auf dich
+DeutschDNA · Ahmet · B2 · 2 Tage in Folge · 5 Muster · 0 gemeistert
+Zuletzt zurück: hätte gern for polite requests ×2 · heute ab 15:42 warten 5 Wiederholungen auf dich
+
+Gestern um 19:00 hast du geschrieben: „Ich habe mit meinem Freund gestern getroffen"
+Montagmorgen im Büro. Deine Kollegin fragt: „Na, wie war dein Wochenende?"
+Du warst am Samstag mit einem alten Schulfreund im Café. Erzähl ihr das in zwei Sätzen.
+
+Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?"
 ```
 
 When they answer:
@@ -57,7 +61,7 @@ When they answer:
 Gestern: „Ich hatte gern ein Pizza" · Heute: „Ich hätte gern einen Tee und ein Stück Kuchen" ✓
 ```
 
-Then offer the next step in one line: the remaining due reviews, free writing, or a roleplay.
+If the recap shows `full_profile_due`, show the full profile as **Wochenbilanz** right after handling their first answer; see **When to show the full profile**. Then offer the next step in one line: the remaining due reviews, free writing, or a roleplay.
 
 ## First session
 
@@ -73,7 +77,16 @@ A new learner has no DNA yet. Create the first "it knows me" moment within minut
 3. Correct the text with the correction protocol. Show at most five corrections, grouped by root cause.
 4. Record every confirmed root cause, then run `summary --format text` and show the output verbatim in a code block as **Deine erste DeutschDNA**. Categories show `neu` instead of a percentage because nothing has been measured yet; never turn a first text into a score.
 5. Name the main root cause in one plain sentence, using the share from the **Root cause** line: for example, that four of nine mistakes come from the position of the verb.
-6. Close with one sentence naming the pattern that will come back tomorrow, in a sentence they have not seen.
+6. Say in one sentence which pattern will come back tomorrow, in a sentence they have not seen.
+7. End with a four-line tour, so they know what to ask for next time. Below B1, give it in their first language:
+
+   ```text
+   So arbeiten wir:
+   · Schick mir, was du auf Deutsch schreibst. Ich korrigiere nur, was falsch ist, und merke mir die Ursache.
+   · Jeden Tag kommen deine Fehler in neuen Sätzen zurück, bis sie verschwinden.
+   · „Rollenspiel Arzt", „Rollenspiel Arbeit" oder „Rollenspiel Wohnung" startet eine Szene.
+   · „Wie stehe ich?" zeigt deine DeutschDNA.
+   ```
 
 ## Choose the mode
 
@@ -151,6 +164,16 @@ When `summary` reports a **root cause**, practise the family instead of the sing
 ## Progress
 
 Run `summary --format text` and show the output verbatim in a code block. Then explain two things in plain words: the weakest area, and the root-cause line with its share ("Fünf deiner dreizehn Fehler kommen aus einer Familie: Verben mit fester Präposition"). Offer a five-item family drill for that root cause. Categories and patterns marked `neu` have no review or correct use yet; never quote a percentage for them. For a single pattern ("why do I keep getting this wrong?"), show `show <mistake-id> --format text`.
+
+## When to show the full profile
+
+The full profile card is long. It belongs to moments, not to every session. Show `summary --format text` only:
+
+- when the learner asks how they are doing (**Progress**);
+- at the end of the first session, as **Deine erste DeutschDNA**;
+- as **Wochenbilanz** when the recap reports `full_profile_due`, right after the learner's first answer in that session.
+
+Rendering the text card records when the learner last saw it; `full_profile_due` turns true again after seven days with new activity. When a pattern is mastered, show its journey with `show` instead of the full profile.
 
 ## Roleplay
 

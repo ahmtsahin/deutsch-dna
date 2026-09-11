@@ -75,4 +75,6 @@ Persist a mistake only when:
 - the correction is grammatically necessary, not just more elegant; and
 - the root cause can be named stably.
 
+Store what the learner actually wrote. `--original` is the whole sentence, verbatim; `--corrected` is the complete minimal correction of that sentence with every error fixed. When one sentence contains several patterns, record the same pair once per pattern. Keep umlauts and ß; never transliterate them.
+
 Prefer `record --mistake-id` for a pattern that already exists in `list`; otherwise use a key from the pattern catalog. Do not persist typos that the learner immediately identifies, quoted third-party text, or uncertain stylistic preferences unless the learner asks to track them. Never `record` a failed review item; `grade --result fail` already counts the recurrence.

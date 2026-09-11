@@ -82,6 +82,8 @@ Read [references/correction-protocol.md](references/correction-protocol.md) befo
    python <skill-root>/scripts/deutsch_dna.py record --original "..." --corrected "..." --category case --pattern "mit + dative" --rule "mit always governs the dative" --verification-status verified
    ```
 
+   Pass the `validator_status` that `verify` returned as `--verification-status`. Pass the whole sentence the learner wrote, verbatim, as `--original`, and the complete minimal correction of that sentence as `--corrected`, even when one sentence contains several patterns; record it once per pattern. Never shorten, paraphrase, or pass a fragment. Write German exactly as it is spelled: the CLI is UTF-8 safe on every platform, so never replace ä, ö, ü, or ß with ae, oe, ue, or ss.
+
 7. Read the response. If `status` is `updated`, this is a recurrence: add the **Muster** line from the correction protocol, built from `recent.occurrences` and `previous`. This callback is the moment the learner feels remembered; never skip it. If the response lists `similar_patterns`, decide whether it is the same root cause and run the suggested `merge` if it is.
 8. When the learner correctly and unprompted uses a pattern that is active in `list`, say so in one line and log it once per message:
 
@@ -89,7 +91,7 @@ Read [references/correction-protocol.md](references/correction-protocol.md) befo
    python <skill-root>/scripts/deutsch_dna.py observe m_... --context "the learner's phrase"
    ```
 
-   Log only clear, specific productions of that pattern, never generic correct German.
+   Log only clear, specific productions of that pattern, never generic correct German. For broad patterns that almost every sentence exercises, such as capitalization, log a correct use only in the kind of situation where the learner used to fail.
 
 Do not persist an uncertain correction as an established mistake. Ask a brief clarifying question or label it as a suggestion.
 
@@ -103,7 +105,7 @@ python <skill-root>/scripts/deutsch_dna.py due --limit 5
 
 For each returned mistake:
 
-1. Create one new, natural situation that tests the same root cause with different nouns, verbs, or context. Never reuse a stored example or answer; the stored history shows what the learner has already seen.
+1. Create one new, natural situation that tests the same root cause with different nouns, verbs, or context. Never reuse a stored example or answer; the stored history shows what the learner has already seen. Choose a situation where the target form is required in every register: do not test capitalization or punctuation with a casual chat message, where natives skip them too.
 2. Ask for production or recall without revealing the target rule.
 3. Grade only after the learner answers, and always pass their answer so it enters the pattern's timeline:
 
@@ -135,16 +137,23 @@ Stay in character and do not interrupt for ordinary errors. After the scene or w
 
 - Give at most three high-value minimal corrections.
 - Record each confirmed pattern with `record`; log clear correct uses of active patterns with `observe`.
-- Close the session with `roleplay-finish`, the returned session ID, the turn count, and the mistake IDs. The duration is derived from the timestamps; do not invent one.
+- Close the session with the returned session ID, the number of learner turns, and the mistake IDs. The duration is derived from the timestamps; do not invent one:
+
+  ```text
+  python <skill-root>/scripts/deutsch_dna.py roleplay-finish s_... --turns 8 --mistake-id m_... --mistake-id m_...
+  ```
+
 - Prefer recurring or communication-blocking errors over cosmetic issues.
 
 ## Repair
 
-If the learner disputes a recorded mistake and they are right, apologize in one sentence and remove it:
+If the learner disputes something you just recorded, graded, or logged and they are right, apologize in one sentence and revert only that change:
 
 ```text
-python <skill-root>/scripts/deutsch_dna.py forget <mistake-id>
+python <skill-root>/scripts/deutsch_dna.py undo <mistake-id>
 ```
+
+`undo` restores the pattern exactly as it was before its latest change, including the review schedule; it is one level deep. Use `forget <mistake-id>` only when the whole pattern is wrong, and say that its entire history goes with it.
 
 If two entries describe one root cause, fold the newer into the canonical one with `merge <source-id> <target-id>`. If a name or category is wrong, use `rename <mistake-id> --pattern "..." --category ...`. Inspect the full history with `show <mistake-id>` before changing anything.
 

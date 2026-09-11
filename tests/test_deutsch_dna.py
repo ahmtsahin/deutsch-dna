@@ -595,6 +595,14 @@ class CliTests(unittest.TestCase):
         empty_summary = self.run_cli("summary", "--format", "text")
         self.assertIn("No mistakes recorded yet", empty_summary)
 
+    def test_roleplay_finish_accepts_plural_and_repeated_mistake_flags(self):
+        started = json.loads(self.run_cli("roleplay-start", "--scenario", "wohnung"))
+        session_id = started["session"]["id"]
+        finished = json.loads(
+            self.run_cli("roleplay-finish", session_id, "--turns", "3", "--mistake-ids", "m_a", "m_b", "--mistake-id", "m_c")
+        )
+        self.assertEqual(finished["session"]["mistake_ids"], ["m_a", "m_b", "m_c"])
+
     def test_cli_error_returns_exit_code_two(self):
         buffer = io.StringIO()
         with contextlib.redirect_stderr(buffer):
@@ -746,6 +754,69 @@ class TimelineAndMigrationTests(StoreTestCase):
             recap = store.recap()
             self.assertIn("mit + dative", recap["mastered"])
             self.assertIn("warten auf + accusative", [row["pattern"] for row in store.recap()["recurring_patterns"]])
+
+
+class UndoTests(StoreTestCase):
+    def test_undo_reverts_a_recurrence_exactly(self):
+        first, _, _ = self.record_example()
+        before = self.store.show(first["id"])
+        self.record_example(original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(days=3))
+        outcome = self.store.undo(first["id"])
+        self.assertEqual(outcome["status"], "undone")
+        self.assertEqual(outcome["undone"], "record")
+        after = self.store.show(first["id"])
+        self.assertEqual(after, {key: value for key, value in before.items() if key != "undo"})
+        self.assertEqual(after["occurrences"], 1)
+        self.assertNotIn("undo", after)
+        with self.assertRaises(dna.DeutschDNAError):
+            self.store.undo(first["id"])
+
+    def test_undo_of_a_new_pattern_removes_it(self):
+        first, _, _ = self.record_example()
+        outcome = self.store.undo(first["id"])
+        self.assertEqual(outcome["status"], "removed")
+        self.assertEqual(self.store.list(status="all"), [])
+
+    def test_undo_restores_the_schedule_after_a_disputed_failed_review(self):
+        mistake, _, _ = self.record_example()
+        passed, _ = self.store.grade(mistake["id"], result="pass", answer="Ich fahre mit dem Bus.", at=BASE_TIME + timedelta(days=1))
+        failed, _ = self.store.grade(
+            mistake["id"], result="fail", answer="mit mein Freund", correction="mit meinem Freund", at=BASE_TIME + timedelta(days=4)
+        )
+        self.assertEqual(failed["review_step"], 0)
+        self.store.undo(mistake["id"])
+        restored = self.store.show(mistake["id"])
+        self.assertEqual(restored["review_step"], 1)
+        self.assertEqual(restored["occurrences"], 1)
+        self.assertEqual(restored["next_review"], passed["next_review"])
+        self.assertEqual(len(restored["examples"]), 1)
+
+    def test_undo_reverts_an_observation(self):
+        mistake, _, _ = self.record_example()
+        self.store.observe([mistake["id"]], context="mit meinem Team", at=BASE_TIME + timedelta(hours=5))
+        self.store.undo(mistake["id"])
+        self.assertEqual(self.store.show(mistake["id"])["correct_uses"], 0)
+
+    def test_rename_and_merge_clear_the_undo_snapshot(self):
+        mistake, _, _ = self.record_example()
+        renamed = self.store.rename(mistake["id"], rule="mit governs the dative")["mistake"]
+        with self.assertRaises(dna.DeutschDNAError):
+            self.store.undo(renamed["id"])
+
+    def test_cli_hides_the_snapshot_but_reports_that_undo_is_available(self):
+        mistake, _, _ = self.record_example()
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = dna.main(["--home", str(self.home), "show", mistake["id"]])
+        self.assertEqual(code, 0)
+        shown = json.loads(buffer.getvalue())["mistake"]
+        self.assertNotIn("undo", shown)
+        self.assertEqual(shown["undo_available"]["action"], "record")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = dna.main(["--home", str(self.home), "undo", mistake["id"]])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(buffer.getvalue())["status"], "removed")
 
 
 if __name__ == "__main__":

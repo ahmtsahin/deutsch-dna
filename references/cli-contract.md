@@ -23,7 +23,8 @@ The CLI creates `profile.json`, `mistakes.json`, and `sessions.json` atomically.
 | `grade` | Apply `pass`, `hard`, or `fail` to a reviewed pattern. `--answer` keeps the learner's sentence in the timeline. |
 | `list` | Compact rows for `--status active`, `mastered`, or `all`, optionally filtered by `--category`. |
 | `show` | One pattern with its full history; `--format text` renders its journey as a timeline. |
-| `forget` | Delete a pattern and drop it from session references. |
+| `undo` | Revert the latest `record`, `grade`, or `observe` on one pattern, including its review schedule. One level deep; undoing the record that created a pattern removes it. |
+| `forget` | Delete a pattern and its whole history, and drop it from session references. |
 | `merge` | Fold the source pattern into the target: counts add up, histories interleave, the source key becomes an alias of the target. |
 | `rename` | Change a pattern's name, category, or rule; the old key stays as an alias. Refuses to collide with an existing pattern and points to `merge`. |
 | `summary` | The FehlerDNA profile: per-category accuracy, root-cause clusters, weakest and due patterns, streak. |
@@ -54,6 +55,7 @@ Resolution order on `record`: exact ID, then the same key in any category, then 
 - `grade` ignores a repeat of the same result within 5 minutes.
 - `observe` ignores a repeat with the same `--context` within 5 minutes.
 - `roleplay-finish` on a completed session returns it unchanged.
+- `undo` works once per change: a second `undo` on the same pattern fails, and `merge` or `rename` clear the snapshot. Responses show `undo_available` instead of the stored snapshot.
 
 ## Review schedule
 

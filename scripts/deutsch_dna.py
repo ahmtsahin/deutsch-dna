@@ -8,6 +8,7 @@ unless a remote validator endpoint is explicitly allowed.
 from __future__ import annotations
 
 import argparse
+import copy
 import difflib
 import hashlib
 import json
@@ -280,6 +281,21 @@ def errors_between(mistake: dict[str, Any], start: datetime, end: datetime) -> i
     return count
 
 
+def public(mistake: dict[str, Any]) -> dict[str, Any]:
+    """The pattern as shown to callers: the undo snapshot is summarized, not dumped."""
+    view = {key: value for key, value in mistake.items() if key != "undo"}
+    snapshot = mistake.get("undo")
+    if snapshot:
+        view["undo_available"] = {"action": snapshot.get("action"), "at": snapshot.get("at")}
+    return view
+
+
+def _snapshot(mistake: dict[str, Any], action: str, moment: datetime) -> None:
+    """Keep one level of undo: the pattern exactly as it was before this change."""
+    state = copy.deepcopy({key: value for key, value in mistake.items() if key != "undo"})
+    mistake["undo"] = {"action": action, "at": iso(moment), "state": state}
+
+
 def profile_view(profile: dict[str, Any]) -> dict[str, Any]:
     return {
         "name": profile.get("name"),
@@ -536,8 +552,6 @@ class StateStore:
         if mistake_id:
             existing: dict[str, Any] | None = self._require(mistakes, mistake_id)
             resolved_by = "mistake_id"
-            if rule and rule.strip():
-                existing["rule"] = rule.strip()
         else:
             if not (category and pattern and rule) or not pattern.strip() or not rule.strip():
                 raise DeutschDNAError("Provide --mistake-id, or --category, --pattern, and --rule")
@@ -571,9 +585,10 @@ class StateStore:
                 "occurrences": int(existing.get("occurrences", 0)),
             }
             was_mastered = existing.get("status") == "mastered"
+            _snapshot(existing, "record", moment)
             existing["occurrences"] = int(existing.get("occurrences", 1)) + 1
             existing["last_seen"] = iso(moment)
-            if rule and rule.strip() and not mistake_id:
+            if rule and rule.strip():
                 existing["rule"] = rule.strip()
             existing["status"] = "active"
             existing["review_step"] = 0
@@ -619,6 +634,7 @@ class StateStore:
                 "correct_use_history": [],
                 "aliases": [],
                 "merged_from": [],
+                "undo": {"action": "record", "at": iso(moment), "state": None},
             }
             mistakes.append(mistake)
             status = "recorded"
@@ -651,6 +667,7 @@ class StateStore:
             if duplicate:
                 results.append({"id": mistake["id"], "pattern": mistake["pattern"], "status": "duplicate"})
                 continue
+            _snapshot(mistake, "observe", moment)
             mistake["correct_uses"] = int(mistake.get("correct_uses", 0)) + 1
             history.append({"observed_at": iso(moment), "context": context})
             mistake["correct_use_history"] = history[-HISTORY_LIMIT:]
@@ -734,6 +751,7 @@ class StateStore:
         ):
             return mistake, "duplicate"
 
+        _snapshot(mistake, "grade", moment)
         mistake["review_attempts"] = int(mistake.get("review_attempts", 0)) + 1
         clean_answer = answer.strip() if answer and answer.strip() else None
         if result == "pass":
@@ -803,6 +821,27 @@ class StateStore:
         self._replace_session_ids(identifier, None)
         return mistake
 
+    def undo(self, identifier: str) -> dict[str, Any]:
+        """Revert the most recent record, grade, or observe on one pattern. One level deep."""
+        document = self._mistake_document()
+        mistakes = document["mistakes"]
+        mistake = self._require(mistakes, identifier)
+        snapshot = mistake.get("undo")
+        if not snapshot:
+            raise DeutschDNAError(
+                f"Nothing to undo for {identifier}: only the latest record, grade, or observe can be undone"
+            )
+        undone = {"undone": snapshot.get("action"), "undone_at": snapshot.get("at")}
+        if snapshot.get("state") is None:
+            document["mistakes"] = [item for item in mistakes if item.get("id") != identifier]
+            _atomic_write(self.mistakes_path, document)
+            self._replace_session_ids(identifier, None)
+            return {"status": "removed", **undone, "mistake": public(mistake)}
+        restored = snapshot["state"]
+        mistakes[mistakes.index(mistake)] = restored
+        _atomic_write(self.mistakes_path, document)
+        return {"status": "undone", **undone, "mistake": public(restored)}
+
     def merge(self, source_id: str, target_id: str, *, at: datetime | None = None) -> dict[str, Any]:
         if source_id == target_id:
             raise DeutschDNAError("source and target must be different mistake IDs")
@@ -846,6 +885,7 @@ class StateStore:
             if alias not in aliases:
                 aliases.append(alias)
         target["aliases"] = aliases
+        target.pop("undo", None)
         target.setdefault("merged_from", []).append(
             {"id": source["id"], "pattern": source["pattern"], "category": source["category"], "merged_at": iso(moment)}
         )
@@ -900,6 +940,7 @@ class StateStore:
                 aliases.append(old_alias)
             mistake["aliases"] = aliases
         mistake.update({"id": new_id, "pattern": new_pattern, "pattern_key": new_key, "category": new_category})
+        mistake.pop("undo", None)
         if rule is not None:
             mistake["rule"] = rule.strip()
         _atomic_write(self.mistakes_path, document)
@@ -1592,6 +1633,9 @@ def build_parser() -> argparse.ArgumentParser:
     forget_parser = subparsers.add_parser("forget", help="Delete a wrongly recorded pattern")
     forget_parser.add_argument("mistake_id")
 
+    undo_parser = subparsers.add_parser("undo", help="Revert the latest record, grade, or observe on one pattern")
+    undo_parser.add_argument("mistake_id")
+
     merge_parser = subparsers.add_parser("merge", help="Fold one pattern into another (source into target)")
     merge_parser.add_argument("source_id")
     merge_parser.add_argument("target_id")
@@ -1634,7 +1678,10 @@ def build_parser() -> argparse.ArgumentParser:
     roleplay_finish_parser.add_argument("session_id")
     roleplay_finish_parser.add_argument("--turns", required=True, type=int)
     roleplay_finish_parser.add_argument("--duration-seconds", type=int, help="Override the timestamp-derived duration")
-    roleplay_finish_parser.add_argument("--mistake-id", action="append", default=[])
+    roleplay_finish_parser.add_argument(
+        "--mistake-id", "--mistake-ids", dest="mistake_id", action="extend", nargs="+", default=[],
+        help="IDs recorded in this session; repeat the flag or list several",
+    )
     roleplay_finish_parser.add_argument("--notes")
     roleplay_finish_parser.add_argument("--at", help="ISO-8601 finish time")
     return parser
@@ -1666,7 +1713,7 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         )
         result: dict[str, Any] = {
             "status": status,
-            "mistake": mistake,
+            "mistake": public(mistake),
             "resolved_by": extra.get("resolved_by"),
             "recent": {"days": RECENT_DAYS, "occurrences": extra.get("recent_occurrences", 0)},
         }
@@ -1686,7 +1733,7 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
     if command == "due":
         moment = parse_moment(arguments.at)
         items = store.due(at=moment, limit=arguments.limit)
-        return {"as_of": iso(moment), "count": len(items), "mistakes": items}
+        return {"as_of": iso(moment), "count": len(items), "mistakes": [public(item) for item in items]}
     if command == "grade":
         mistake, status = store.grade(
             arguments.mistake_id,
@@ -1695,21 +1742,24 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
             correction=arguments.correction,
             at=parse_moment(arguments.at),
         )
-        return {"status": status, "mistake": mistake}
+        return {"status": status, "mistake": public(mistake)}
     if command == "list":
         rows = store.list(status=arguments.status, category=arguments.category)
         return {"count": len(rows), "status_filter": arguments.status, "mistakes": rows}
     if command == "show":
-        return {"mistake": store.show(arguments.mistake_id)}
+        return {"mistake": public(store.show(arguments.mistake_id))}
     if command == "forget":
-        return {"status": "forgotten", "mistake": store.forget(arguments.mistake_id)}
+        return {"status": "forgotten", "mistake": public(store.forget(arguments.mistake_id))}
+    if command == "undo":
+        return store.undo(arguments.mistake_id)
     if command == "merge":
-        return {"status": "merged", "mistake": store.merge(arguments.source_id, arguments.target_id, at=parse_moment(arguments.at))}
+        merged = store.merge(arguments.source_id, arguments.target_id, at=parse_moment(arguments.at))
+        return {"status": "merged", "mistake": public(merged)}
     if command == "rename":
         outcome = store.rename(
             arguments.mistake_id, pattern=arguments.pattern, category=arguments.category, rule=arguments.rule
         )
-        return {"status": "renamed", **outcome}
+        return {"status": "renamed", "previous_id": outcome["previous_id"], "mistake": public(outcome["mistake"])}
     if command == "summary":
         return store.summary(at=parse_moment(arguments.at))
     if command == "recap":

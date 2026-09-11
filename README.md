@@ -154,7 +154,7 @@ Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just
 - **Let's review.** One due mistake at a time, each in a new situation.
 - **Roleplay Restaurant.** Scenes for Alltag, Arbeit, Arzt, Wohnung, and Restaurant. No interruptions; at most three corrections in the debrief.
 - **How am I doing?** The DeutschDNA profile, the root cause behind your weakest area, and a family drill for it.
-- **That wasn't a mistake.** The agent removes or merges the wrong entry with `forget`, `merge`, or `rename`.
+- **That wasn't a mistake.** The agent reverts just that correction with `undo`, schedule included, or fixes the entry with `merge`, `rename`, or `forget`.
 
 ## The CLI
 
@@ -174,7 +174,7 @@ python scripts/deutsch_dna.py summary --format text
 | `due`, `grade` | Spaced-repetition reviews |
 | `summary` | The DeutschDNA profile with root causes |
 | `show` | The journey of one pattern |
-| `list`, `forget`, `merge`, `rename` | Inspect and repair the memory |
+| `list`, `undo`, `forget`, `merge`, `rename` | Inspect and repair the memory |
 | `verify` | Minimality check plus optional LanguageTool |
 | `roleplay-start`, `roleplay-finish` | Stored roleplay sessions |
 

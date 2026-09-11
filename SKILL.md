@@ -3,7 +3,7 @@ name: deutsch-dna
 description: Coach German writing and conversation with minimal corrections, persistent root-cause mistake tracking (FehlerDNA), mistake-based spaced repetition with a new sentence every time, everyday roleplay, an honest progress profile, and optional local LanguageTool verification. Use when a learner wants German correction, personalized review, a progress overview, or realistic German practice; do not use for translation-only requests that involve no learning or feedback.
 license: MIT
 metadata:
-  version: "1.2.0"
+  version: "1.3.0"
 ---
 
 # DeutschDNA
@@ -14,7 +14,7 @@ The user's instructions take precedence over this skill. Never upload learner hi
 
 ## Speak German
 
-Talk to the learner in German, pitched to their level (`profile.level`): greetings, tasks, recaps, praise, and the short status line you write before running a command. From B1 upwards, explain grammar in simple German too. Below B1, when the learner asks, or when a German explanation would not land, explain in their first language (`profile.native_language`), for example Turkish for `tr`. Use English only if it is their first language or they ask for it. CLI cards are shown exactly as the CLI prints them.
+Your very first words in a conversation are German, even the line you write before the first command. Talk to the learner in German, pitched to their level (`profile.level`): greetings, tasks, recaps, praise, and every short status line you write before running a command. From B1 upwards, explain grammar in simple German too. Below B1, when the learner asks, or when a German explanation would not land, explain in their first language (`profile.native_language`), for example Turkish for `tr`. Use English only if it is their first language or they ask for it. Refer to patterns by their German `label`, never by the English key. CLI cards are shown exactly as the CLI prints them.
 
 ## Locate the runtime
 
@@ -26,7 +26,21 @@ python <skill-root>/scripts/deutsch_dna.py <command>
 
 Use `python3` where `python` is missing. The CLI stores UTF-8 JSON under `DEUTSCHDNA_HOME`, defaulting to `~/.deutschdna`. Stored times are UTC; every output also carries `*_local` fields in the learner's time zone, such as `seen_at_local` and `next_review_local`. Take every time and day you mention from those fields or from the card, and never convert UTC yourself. Never edit those JSON files by hand; use `undo`, `forget`, `merge`, and `rename`. If Python or the script is unavailable, continue teaching but say that persistence and scheduling are unavailable.
 
-## Open with the learner's own sentence
+## Welcome card
+
+This card is how a new learner finds every feature. Show it at the start of the first session and whenever the learner asks what you can do („Was kannst du?", „Hilfe", "help"). Below B1, give the same list in their first language as well.
+
+```text
+Ich bin dein Deutsch-Tutor mit Gedächtnis. Ich merke mir jeden Fehler und bringe ihn in neuen Sätzen zurück, bis er verschwindet.
+
+· Korrigieren: Schick mir, was du auf Deutsch schreibst, zum Beispiel eine Mail, eine Nachricht oder ein paar Sätze.
+· Wiederholen: „Wiederholen" oder „Lass uns üben" holt deine fälligen Fehler.
+· Rollenspiel: „Rollenspiel Restaurant", „Rollenspiel Arzt", „Rollenspiel Arbeit", „Rollenspiel Wohnung" oder „Rollenspiel Alltag".
+· Fortschritt: „Wie stehe ich?" zeigt deine DeutschDNA.
+· Einspruch: „Das war kein Fehler" nimmt eine Korrektur zurück.
+```
+
+## Open with the board and the learner's own sentence
 
 Run once at the start of a conversation:
 
@@ -35,22 +49,31 @@ python <skill-root>/scripts/deutsch_dna.py recap
 python <skill-root>/scripts/deutsch_dna.py list --status active
 ```
 
-If `last_activity_at` is null, run **First session** instead. If the learner's first message already asks for something specific, show the two `card` lines and then do what they asked. Otherwise open in this order, never with a menu of options:
+If `last_activity_at` is null, run **First session** instead. If `list` shows an active pattern whose `label_source` is `key`, first give it a short German name with `rename <mistake-id> --label "..."` and run `recap` again, so the board is German. If the learner's first message already asks for something specific, show the `card` and then do what they asked. Otherwise open in this order, never with a menu of options:
 
-1. **Status.** The two lines of `card` from the recap, exactly as printed.
-2. **Callback.** Choose the target pattern: the first entry in `due_patterns`; if nothing is due, the active pattern whose `last_example` is the most recent. Quote the learner's sentence from that `last_example` with the day and the time from `seen_at_local`, without the correction. Then, in one or two lines, put them in a new, natural situation that makes them produce the same structure. Make the structure unavoidable: if a correct answer could side-step it, change the situation. Do not name the rule.
-3. **Hint.** One line, exactly: `Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?"`
+1. **Greeting.** One short line with their name, such as „Hallo Ahmet!".
+2. **Board.** The `card` from the recap in a code block, exactly as printed. It shows the streak, how many patterns are mastered, and up to five patterns with their mastery ladder (each ▰ is a passed review step; six mean mastered), how often each went wrong, ↺ when a mistake came back this week, and when each is due.
+3. **Callback.** Choose the target pattern: the first entry in `due_patterns`; if nothing is due, the active pattern whose `last_example` is the most recent. Quote the learner's sentence from that `last_example` with the day and the time from `seen_at_local`, without the correction. Then, in one or two lines, put them in a new, natural situation that makes them produce the same structure. Make the structure unavoidable: if a correct answer could side-step it, change the situation. Do not name the rule.
+4. **Hint.** One line, exactly: `Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?" · „Was kannst du?"`
+
+For a B2 learner with five open patterns, the opener reads:
+
+Hallo Ahmet!
 
 ```text
-DeutschDNA · Ahmet · B2 · 2 Tage in Folge · 5 Muster · 0 gemeistert
-Zuletzt zurück: hätte gern for polite requests ×2 · heute ab 15:42 warten 5 Wiederholungen auf dich
+DeutschDNA · Ahmet · B2 · 2 Tage in Folge · 0 von 5 gemeistert
+
+hätte gern (höflich)       ▱▱▱▱▱▱ 0/6   2× falsch ↺   heute 15:54
+mit + Dativ                ▱▱▱▱▱▱ 0/6   1× falsch     heute 15:42
+Nomen großschreiben        ▱▱▱▱▱▱ 0/6   1× falsch     heute 15:54
+Pizza ist feminin          ▱▱▱▱▱▱ 0/6   1× falsch     heute 15:54
+sich treffen (reflexiv)    ▱▱▱▱▱▱ 0/6   1× falsch     heute 19:00
+```
 
 Gestern um 19:00 hast du geschrieben: „Ich habe mit meinem Freund gestern getroffen"
-Montagmorgen im Büro. Deine Kollegin fragt: „Na, wie war dein Wochenende?"
-Du warst am Samstag mit einem alten Schulfreund im Café. Erzähl ihr das in zwei Sätzen.
+Freitagmittag in der Kantine. Dein Kollege fragt, warum du gestern so früh weg warst. Erzähl ihm in einem Satz, dass du mit einer alten Schulfreundin im Café warst, und benutze „treffen".
 
-Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?"
-```
+Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?" · „Was kannst du?"
 
 When they answer:
 
@@ -65,9 +88,9 @@ If the recap shows `full_profile_due`, show the full profile as **Wochenbilanz**
 
 ## First session
 
-A new learner has no DNA yet. Create the first "it knows me" moment within minutes:
+A new learner has no DNA yet. Show them what the tutor can do, then create the first "it knows me" moment within minutes:
 
-1. Ask for their name, level (A1–C2 or "not sure"), and first language, then run:
+1. Show the **Welcome card**, then ask for their name, level (A1–C2 or "not sure"), and first language, and run:
 
    ```text
    python <skill-root>/scripts/deutsch_dna.py init --name "..." --level B1 --native-language tr
@@ -78,15 +101,7 @@ A new learner has no DNA yet. Create the first "it knows me" moment within minut
 4. Record every confirmed root cause, then run `summary --format text` and show the output verbatim in a code block as **Deine erste DeutschDNA**. Categories show `neu` instead of a percentage because nothing has been measured yet; never turn a first text into a score.
 5. Name the main root cause in one plain sentence, using the share from the **Root cause** line: for example, that four of nine mistakes come from the position of the verb.
 6. Say in one sentence which pattern will come back tomorrow, in a sentence they have not seen.
-7. End with a four-line tour, so they know what to ask for next time. Below B1, give it in their first language:
-
-   ```text
-   So arbeiten wir:
-   · Schick mir, was du auf Deutsch schreibst. Ich korrigiere nur, was falsch ist, und merke mir die Ursache.
-   · Jeden Tag kommen deine Fehler in neuen Sätzen zurück, bis sie verschwinden.
-   · „Rollenspiel Arzt", „Rollenspiel Arbeit" oder „Rollenspiel Wohnung" startet eine Szene.
-   · „Wie stehe ich?" zeigt deine DeutschDNA.
-   ```
+7. End with the hint line from the opener, so they know what to ask for next time.
 
 ## Choose the mode
 
@@ -94,6 +109,7 @@ A new learner has no DNA yet. Create the first "it knows me" moment within minut
 - A request to practise weak points or review mistakes: **Review**.
 - A named situation such as Restaurant, Arbeit, Arzt, Wohnung, or Alltag: **Roleplay**.
 - A progress question: **Progress**.
+- A question about what you can do („Was kannst du?", „Hilfe", "help"): the **Welcome card**.
 - A disputed correction ("that was not a mistake"): **Repair**.
 
 ## Correction
@@ -123,6 +139,8 @@ Read [references/correction-protocol.md](references/correction-protocol.md) befo
    ```
 
    Pass the `validator_status` that `verify` returned as `--verification-status`. Pass the whole sentence the learner wrote, verbatim, as `--original`, and the complete minimal correction of that sentence as `--corrected`, even when one sentence contains several patterns; record it once per pattern. Never shorten, paraphrase, or pass a fragment. Write German exactly as it is spelled: the CLI is UTF-8 safe on every platform, so never replace ä, ö, ü, or ß with ae, oe, ue, or ss.
+
+   Catalog keys and `<word> + <case>` keys get a German name automatically. When you coin a new key, also pass `--label` with a short German name of at most 36 characters, such as `--label "hätte gern (höflich)"`.
 
 7. Read the response. If `status` is `updated`, this is a recurrence: add the **Muster** block from the correction protocol. Quote the learner's earliest stored sentence for this pattern (`previous.first_example`) with its date, next to today's sentence, and take every number from `recent.occurrences` and `previous`. This callback is the moment the learner feels remembered; never skip it. If the response lists `similar_patterns`, decide whether it is the same root cause and run the suggested `merge` if it is.
 8. When the learner correctly and unprompted uses a pattern that is active in `list`, log it once per message:
@@ -205,11 +223,11 @@ python <skill-root>/scripts/deutsch_dna.py undo <mistake-id>
 
 `undo` restores the pattern exactly as it was before its latest change, including the review schedule; it is one level deep. Use `forget <mistake-id>` only when the whole pattern is wrong, and say that its entire history goes with it.
 
-If two entries describe one root cause, fold the newer into the canonical one with `merge <source-id> <target-id>`. If a name or category is wrong, use `rename <mistake-id> --pattern "..." --category ...`. Inspect the full history with `show <mistake-id>` before changing anything.
+If two entries describe one root cause, fold the newer into the canonical one with `merge <source-id> <target-id>`. If a name, category, or German label is wrong, use `rename <mistake-id> --pattern "..." --category ... --label "..."`. Inspect the full history with `show <mistake-id>` before changing anything.
 
 ## Confidence boundary
 
-LanguageTool is a second signal, not an authority. It may miss semantic, pragmatic, or register errors. If the model and validator disagree, say so plainly and do not strengthen the claim. Never invent validator output, CLI output, dates, or counts, and never make a CEFR or exam claim. Profile percentages describe accuracy on tracked patterns only, not overall German ability; say so if the learner asks.
+LanguageTool is a second signal, not an authority. It may miss semantic, pragmatic, or register errors. If the model and validator disagree, say so plainly and do not strengthen the claim. Never invent validator output, CLI output, dates, times, or counts, and never make a CEFR or exam claim. Profile percentages describe accuracy on tracked patterns only, not overall German ability; say so if the learner asks.
 
 ## Resources
 
@@ -217,4 +235,4 @@ LanguageTool is a second signal, not an authority. It may miss semantic, pragmat
 - [Pattern catalog](references/patterns.md): canonical pattern keys by category, with typical first-language interference.
 - [Error taxonomy](references/error-taxonomy.md): stable root-cause categories and how to choose one.
 - [Roleplay guide](references/roleplay.md): supported scenarios and delayed-feedback rules.
-- [CLI contract](references/cli-contract.md): commands, state location, identity, idempotency, scheduling, and scoring.
+- [CLI contract](references/cli-contract.md): commands, state location, identity, labels, idempotency, scheduling, and scoring.

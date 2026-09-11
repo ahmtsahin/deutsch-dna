@@ -1,6 +1,6 @@
 # CLI contract
 
-All commands print UTF-8 JSON to stdout regardless of the console code page. `recap`, `summary`, `due`, `list`, and `show` also accept `--format text` for a human-readable rendering meant to be shown verbatim, and `recap --format card` prints the two German status lines that open a session. Errors print JSON to stderr and exit with status 2.
+All commands print UTF-8 JSON to stdout regardless of the console code page. `recap`, `summary`, `due`, `list`, and `show` also accept `--format text` for a human-readable rendering meant to be shown verbatim, and `recap --format card` prints the German board that opens a session. Errors print JSON to stderr and exit with status 2.
 
 ## State
 
@@ -19,7 +19,7 @@ Stored times are UTC. Outputs add `*_local` twins such as `seen_at_local`, `next
 | Command | Purpose |
 | --- | --- |
 | `init` | Create or update the learner profile without clearing history. |
-| `record` | Add a new root-cause pattern or add a recurrence to an existing one. Use `--mistake-id` to recur a known pattern, or `--category`, `--pattern`, and `--rule` to name one. |
+| `record` | Add a new root-cause pattern or add a recurrence to an existing one. Use `--mistake-id` to recur a known pattern, or `--category`, `--pattern`, and `--rule` to name one; `--label` sets its German name. |
 | `observe` | Log a correct, unprompted use of one or more tracked patterns (by ID). |
 | `due` | Active patterns whose `next_review` is at or before the given time. |
 | `grade` | Apply `pass`, `hard`, or `fail` to a reviewed pattern. `--answer` keeps the learner's sentence in the timeline. |
@@ -28,9 +28,9 @@ Stored times are UTC. Outputs add `*_local` twins such as `seen_at_local`, `next
 | `undo` | Revert the latest `record`, `grade`, or `observe` on one pattern, including its review schedule. One level deep; undoing the record that created a pattern removes it. |
 | `forget` | Delete a pattern and its whole history, and drop it from session references. |
 | `merge` | Fold the source pattern into the target: counts add up, histories interleave, the source key becomes an alias of the target. |
-| `rename` | Change a pattern's name, category, or rule; the old key stays as an alias. Refuses to collide with an existing pattern and points to `merge`. |
+| `rename` | Change a pattern's key, category, rule, or German `--label`; an old key stays as an alias. Refuses to collide with an existing pattern and points to `merge`. |
 | `summary` | The FehlerDNA profile: per-category accuracy, root-cause clusters, weakest and due patterns, streak. |
-| `recap` | The session opener: activity in the last `--days` (default 7), totals, `schedule` (due now, later today, next review in local time), `full_profile_due`, and `card`, the two status lines. |
+| `recap` | The session opener: activity in the last `--days` (default 7), totals, `schedule` (due now, later today, next review in local time), `full_profile_due`, `board` (up to five patterns: due first, then by errors) with `board_more`, and `card`, the rendered board. |
 | `verify` | Minimality analysis plus a local LanguageTool check. |
 | `roleplay-start`, `roleplay-finish` | Store a roleplay session; the duration is derived from the two timestamps unless `--duration-seconds` overrides it. |
 
@@ -43,6 +43,17 @@ Every writing command accepts `--at ISO-8601` for deterministic integrations and
 - `recent.occurrences`: errors on this pattern in the last 7 days, including this one.
 - `previous` (recurrences only): the pattern's `last_seen`, `review_step`, `status`, and `occurrences` before this error, plus `first_example` and `last_example`, the earliest and the latest stored wrong sentence. Use them for the recurrence callback in the correction protocol.
 - `similar_patterns` and `hint` (new patterns only): existing patterns whose key is at least 72% similar, with a ready `merge` command.
+
+## German labels
+
+Pattern keys stay English and stable; learners see German names. Every row and pattern in the output carries `label` and `label_source`:
+
+- `custom`: set with `record --label` or `rename --label`.
+- `catalog`: a built-in name for a catalog key, such as `Verb an Position 2` or `Nomen großschreiben`.
+- `rule`: derived from the key, such as `Pizza ist feminin`, `sich treffen (reflexiv)`, `weil: Verb ans Ende`, or `warten auf + Akkusativ`.
+- `key`: no German name is known yet; the key itself is shown. Give the pattern a label with `rename --label`.
+
+Labels are at most 60 characters; the board shows up to 36 of them. Text views (`card`, `summary`, `show`, `due`, `recap --format text`) use labels; `list --format text` shows the keys.
 
 ## The observe response
 

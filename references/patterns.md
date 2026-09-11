@@ -2,6 +2,8 @@
 
 Canonical keys for the most frequent root causes. Use these exact keys with `record --pattern`. The CLI maps `Dativ`, `Akk.`, `takes`, `governs`, and similar variants onto the same key, but a catalog key keeps the FehlerDNA clean. When a real error fits none of these, coin a key in the same style: the reusable rule, in English, lowercase, with `+` for government (`<word> + <case>`).
 
+Learners never see these English keys. The CLI shows a German label for every catalog key and for keys shaped like `<word> + <case>`, `<Noun> is feminine`, `<verb> is reflexive`, or `<conj> sends finite verb to end`. When you coin any other key, pass a short German `--label` with it.
+
 Naming rules:
 
 - Name the rule, not the sentence: `mit + dative`, not `mit meinem Chef`.

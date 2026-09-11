@@ -16,19 +16,27 @@ The demo replays four months of one learner through the real engine. The story o
 
 ### It remembers you
 
-Every session opens the same way, never with a menu: two status lines printed by the CLI, one of the learner's own sentences, a new situation that asks for the same structure, and one line of what else to ask for.
+Every session opens the same way, never with a menu: a greeting, a board of the patterns in progress printed by the CLI, one of the learner's own sentences with a new situation that asks for the same structure, and one line of what else to ask for.
+
+Hallo Ahmet!
 
 ```text
-DeutschDNA · Ahmet · B2 · 17 Tage in Folge · 12 Muster · 2 gemeistert
-Zuletzt zurück: weil sends finite verb to end ×2 · 3 Wiederholungen jetzt fällig
+DeutschDNA · Ahmet · B2 · 17 Tage in Folge · 2 von 14 gemeistert
 
-Gestern um 10:31 hast du geschrieben: „Das ist ein wichtige Termin."
-Deine Kollegin fragt, was du am Wochenende gekauft hast. Beschreib es in einem Satz.
-
-Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?"
+Adjektiv nach ein/kein/mein  ▱▱▱▱▱▱ 0/6   5× falsch ↺   jetzt fällig
+anrufen + Akkusativ          ▰▰▱▱▱▱ 2/6   2× falsch     jetzt fällig
+Angst haben vor + Dativ      ▰▱▱▱▱▱ 1/6   1× falsch     jetzt fällig
+warten auf + Akkusativ       ▱▱▱▱▱▱ 0/6   4× falsch ↺   morgen 11:01
+sich freuen auf + Akkusativ  ▰▰▱▱▱▱ 2/6   3× falsch     Mo 11:01
++7 weitere
 ```
 
-The status lines are real CLI output for the demo learner, with times in the local time zone. The rest follows the format the skill asks the agent to use. Get it right, and the old sentence and the new one appear side by side. Get it wrong, and the mistake is caught on the spot. Either way the learner sees that the tutor remembers.
+Gestern um 11:01 hast du geschrieben: „Das ist ein wichtige Termin."<br>
+Deine Kollegin fragt, was du am Wochenende gekauft hast. Beschreib es in einem Satz.
+
+Außerdem: Text schicken · „Wiederholen" · „Rollenspiel Arzt" · „Wie stehe ich?" · „Was kannst du?"
+
+The board is real CLI output for the demo learner: each ▰ is a passed review step, six mean mastered, ↺ marks a mistake that came back this week, and times are local. The rest follows the format the skill asks the agent to use. Get it right, and the old sentence and the new one appear side by side. Get it wrong, and the mistake is caught on the spot.
 
 ### It finds the root cause, not the symptom
 
@@ -44,18 +52,18 @@ Endungen        ██████░░░░  55%   2 patterns · 0 mastered �
 Plural          ███████░░░  67%   1 pattern  · 0 mastered · 1 wrong · 3 right
 
 Root cause: Präpositionen · 5 of your 15 mistakes in 30 days · 4 related patterns
-  → sich freuen auf + accusative
-  → warten auf + accusative
-  → sich interessieren für + accusative
-  → Angst haben vor + dative
+  → sich freuen auf + Akkusativ
+  → warten auf + Akkusativ
+  → sich interessieren für + Akkusativ
+  → Angst haben vor + Dativ
 Also: Endungen · 5 of your 15 mistakes in 30 days · 2 related patterns
 
 Weakest patterns
-  weil sends finite verb to end     40%  2 wrong · 1 right · step 0/6
-  adjective ending after der-word   50%  3 wrong · 3 right · step 2/6
-  Angst haben vor + dative          50%  1 wrong · 1 right · step 1/6
+  weil: Verb ans Ende         40%  2 wrong · 1 right · step 0/6
+  Adjektiv nach der/die/das   50%  3 wrong · 3 right · step 2/6
+  Angst haben vor + Dativ     50%  1 wrong · 1 right · step 1/6
 
-Due now: adjective ending after ein-word · anrufen + accusative · Angst haben vor + dative
+Due now: Adjektiv nach ein/kein/mein · anrufen + Akkusativ · Angst haben vor + Dativ
 ```
 
 Four different mistakes, one missing rule: verbs with a fixed preposition. So the next drill is not *warten auf* again. It is the family, including members the learner has never missed: *denken an*, *sich erinnern an*, *teilnehmen an*.
@@ -63,7 +71,7 @@ Four different mistakes, one missing rule: verbs with a fixed preposition. So th
 ### Every mistake has a story
 
 ```text
-mit + dative · Kasus · mastered
+mit + Dativ · Kasus · mastered
 Rule: mit always governs the dative
 
 2026-05-14  ✗ wrote    Ich spreche mit mein Chef. → Ich spreche mit meinem Chef.
@@ -84,7 +92,7 @@ Every review is a new sentence, so the answer cannot be memorized. The last line
 ### And it notices when an old one comes back
 
 ```text
-warten auf + accusative · Präpositionen · learning
+warten auf + Akkusativ · Präpositionen · learning
 Rule: warten takes auf + accusative
 
 2026-05-14  ✗ wrote    Ich warte dich. → Ich warte auf dich.
@@ -155,7 +163,7 @@ See the official [Claude Code skill guide](https://code.claude.com/docs/en/skill
 
 ## Use it
 
-Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just write German and ask for feedback. It talks to you in German at your level. On the first run it asks for five or six sentences about your week and shows your first DeutschDNA: no scores yet, just the root cause behind most of your mistakes. From then on, every conversation opens with two status lines, one of your own sentences, and a new situation that asks for the same structure. A one-line hint lists what else you can ask for, and once a week the full profile comes back as a Wochenbilanz.
+Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or just write German and ask for feedback. It talks to you in German at your level and names every pattern in German. On the first run it shows what it can do, then asks for five or six sentences about your week and shows your first DeutschDNA: no scores yet, just the root cause behind most of your mistakes. From then on, every conversation opens with a board of your patterns, one of your own sentences, and a new situation that asks for the same structure. Say „Was kannst du?" at any time to see every feature with example phrases, and once a week the full profile comes back as a Wochenbilanz.
 
 - **Correct my German.** Minimal correction, the reason, a verification label, and the recurrence callback when a mistake comes back.
 - **Let's review.** One due mistake at a time, each in a new situation.
@@ -175,7 +183,7 @@ python scripts/deutsch_dna.py summary --format text
 
 | Command | What it does |
 | --- | --- |
-| `recap` | The session opener; `--format card` prints the two German status lines |
+| `recap` | The session opener; `--format card` prints the German board of patterns in progress |
 | `record` | File a mistake under its root cause, or count a recurrence |
 | `observe` | Count a correct, unprompted use of a tracked pattern |
 | `due`, `grade` | Spaced-repetition reviews |

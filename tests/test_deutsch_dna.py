@@ -748,7 +748,7 @@ class TimelineAndMigrationTests(StoreTestCase):
         text = dna.render_summary_text(summary)
         self.assertEqual(summary["recent_errors_total"], 7)
         self.assertIn("Root cause: Präpositionen · 3 of your 7 mistakes in 30 days · 3 related patterns", text)
-        self.assertIn("  → warten auf + accusative", text)
+        self.assertIn("  → warten auf + Akkusativ", text)
         self.assertIn("Also: Endungen · 4 of your 7 mistakes in 30 days · 1 related pattern", text)
 
     def test_demo_story_replays_through_the_engine(self):
@@ -929,7 +929,7 @@ class LocalTimeAndCardTests(StoreTestCase):
         self.assertEqual(recap["days_since_last_activity"], 0)
         self.assertEqual(recap["last_activity_local"], "2026-09-11T11:00:00+02:00")
 
-    def test_card_shows_streak_recurrence_and_the_local_review_time(self):
+    def test_card_shows_a_board_with_ladders_and_local_times(self):
         self.use_offset("+02:00")
         self.store.init_profile(name="Ahmet", level="B2", native_language="tr", at=BASE_TIME)
         self.record_example()
@@ -944,26 +944,47 @@ class LocalTimeAndCardTests(StoreTestCase):
             original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(hours=2)
         )
         recap = self.store.recap(at=datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc))
-        self.assertEqual(recap["schedule"]["later_today"], 2)
-        self.assertEqual(
-            recap["card"],
-            "DeutschDNA · Ahmet · B2 · 1 Tag in Folge · 2 Muster · 0 gemeistert\n"
-            "Zuletzt zurück: mit + dative ×2 · heute ab 14:10 warten 2 Wiederholungen auf dich",
-        )
+        lines = recap["card"].splitlines()
+        self.assertEqual(lines[0], "DeutschDNA · Ahmet · B2 · 1 Tag in Folge · 0 von 2 gemeistert")
+        self.assertEqual(lines[1], "")
+        self.assertTrue(lines[2].startswith("mit + Dativ "))
+        self.assertIn("▱▱▱▱▱▱ 0/6", lines[2])
+        self.assertIn("2× falsch ↺", lines[2])
+        self.assertTrue(lines[2].endswith("heute 16:00"))
+        self.assertTrue(lines[3].startswith("sich treffen (reflexiv)"))
+        self.assertNotIn("↺", lines[3])
+        self.assertTrue(lines[3].endswith("heute 14:10"))
+        self.assertTrue(all(len(line) <= 80 for line in lines))
         printed = self.print_cli("recap", "--format", "card", "--at", "2026-09-11T08:00:00Z")
         self.assertEqual(printed.strip(), recap["card"])
         due = self.store.recap(at=datetime(2026, 9, 11, 15, 0, tzinfo=timezone.utc))
-        self.assertTrue(due["card"].endswith("2 Wiederholungen jetzt fällig"))
+        self.assertTrue(all(line.endswith("jetzt fällig") for line in due["card"].splitlines()[2:4]))
 
-    def test_card_for_a_learner_who_paused(self):
+    def test_board_for_a_learner_who_paused(self):
         self.use_offset("+02:00")
         mistake, _, _ = self.record_example()
         self.store.grade(mistake["id"], result="pass", at=BASE_TIME + timedelta(days=1))
         later = self.store.recap(at=BASE_TIME + timedelta(days=1, hours=6))
-        self.assertTrue(later["card"].endswith("nächste Wiederholung am 14.09. um 14:00"))
+        row = later["card"].splitlines()[2]
+        self.assertIn("▰▱▱▱▱▱ 1/6", row)
+        self.assertTrue(row.endswith("Mo 14:00"))
         paused = self.store.recap(at=BASE_TIME + timedelta(days=9))
         self.assertIn("zuletzt vor 8 Tagen", paused["card"])
-        self.assertTrue(paused["card"].endswith("1 Wiederholung jetzt fällig"))
+        self.assertTrue(paused["card"].splitlines()[2].endswith("jetzt fällig"))
+
+    def test_board_shows_five_rows_and_counts_the_rest(self):
+        for index in range(7):
+            self.record_example(
+                category="vocabulary",
+                pattern=f"test pattern {index}",
+                original=f"Satz {index} falsch.",
+                corrected=f"Satz {index} richtig.",
+                at=BASE_TIME + timedelta(minutes=index),
+            )
+        recap = self.store.recap(at=BASE_TIME + timedelta(hours=1))
+        self.assertEqual(len(recap["board"]), 5)
+        self.assertEqual(recap["board_more"], 2)
+        self.assertEqual(recap["card"].splitlines()[-1], "+2 weitere")
 
     def test_card_before_any_history(self):
         recap = self.store.recap(at=BASE_TIME)
@@ -984,6 +1005,63 @@ class LocalTimeAndCardTests(StoreTestCase):
             original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.", at=BASE_TIME + timedelta(days=8)
         )
         self.assertTrue(self.store.recap(at=BASE_TIME + timedelta(days=8, hours=1))["full_profile_due"])
+
+
+class LabelTests(StoreTestCase):
+    def test_display_labels_come_from_catalog_rules_and_case_names(self):
+        cases = {
+            ("spelling", "German nouns are capitalized"): ("Nomen großschreiben", "catalog"),
+            ("word-order", "finite verb in second position"): ("Verb an Position 2", "catalog"),
+            ("case", "two-way preposition: location takes dative"): ("Wo? → Dativ", "catalog"),
+            ("article", "Pizza is feminine"): ("Pizza ist feminin", "rule"),
+            ("verb", "sich treffen is reflexive"): ("sich treffen (reflexiv)", "rule"),
+            ("word-order", "weil sends finite verb to end"): ("weil: Verb ans Ende", "rule"),
+            ("plural", "Person plural is Personen"): ("Plural von Person: Personen", "rule"),
+            ("preposition", "warten auf + accusative"): ("warten auf + Akkusativ", "rule"),
+            ("preposition", "warten auf + Akk."): ("warten auf + Akkusativ", "rule"),
+            ("case", "mit + Dativ"): ("mit + Dativ", "rule"),
+            ("verb", "hätte gern for polite requests"): ("hätte gern for polite requests", "key"),
+        }
+        for (category, pattern), expected in cases.items():
+            mistake = {"pattern": pattern, "pattern_key": dna.pattern_key(pattern), "category": category}
+            self.assertEqual(dna.display_label(mistake), expected, pattern)
+
+    def test_record_and_rename_set_a_custom_label(self):
+        mistake, _, _ = self.record_example(
+            category="verb",
+            pattern="hätte gern for polite requests",
+            rule="Use hätte gern for a polite request",
+            original="Ich hatte gern ein Bier.",
+            corrected="Ich hätte gern ein Bier.",
+            label="hätte gern (höflich)",
+        )
+        row = self.store.list()[0]
+        self.assertEqual((row["label"], row["label_source"]), ("hätte gern (höflich)", "custom"))
+        outcome = self.store.rename(mistake["id"], label="hätte gern statt hatte gern")
+        self.assertEqual(outcome["mistake"]["id"], mistake["id"])
+        self.assertEqual(self.store.list()[0]["label"], "hätte gern statt hatte gern")
+        buffer = io.StringIO()
+        with contextlib.redirect_stdout(buffer):
+            code = dna.main(["--home", str(self.home), "rename", mistake["id"], "--label", "hätte gern (höflich)"])
+        self.assertEqual(code, 0)
+        self.assertEqual(json.loads(buffer.getvalue())["mistake"]["label"], "hätte gern (höflich)")
+        with self.assertRaises(dna.DeutschDNAError):
+            self.store.rename(mistake["id"], label="   ")
+        with self.assertRaises(dna.DeutschDNAError):
+            self.record_example(label="x" * 61, original="Neu eins.", corrected="Neu zwei.")
+
+    def test_text_views_use_german_labels(self):
+        mistake, _, _ = self.record_example(
+            category="word-order",
+            pattern="weil sends finite verb to end",
+            original="weil ich bin krank",
+            corrected="weil ich krank bin",
+        )
+        timeline = dna.render_show_text({"mistake": dna.public(self.store.show(mistake["id"]))})
+        self.assertTrue(timeline.startswith("weil: Verb ans Ende · Wortstellung · learning"))
+        due = self.store.due(at=BASE_TIME + timedelta(days=2))
+        text = dna.render_due_text({"count": len(due), "mistakes": [dna.public(item) for item in due]})
+        self.assertIn("1. weil: Verb ans Ende  [word-order]", text)
 
 
 if __name__ == "__main__":

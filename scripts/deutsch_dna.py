@@ -39,6 +39,10 @@ WEAK_ACCURACY_THRESHOLD = 60
 CLUSTER_WINDOW = timedelta(days=30)
 TIMELINE_LIMIT = 16
 FULL_PROFILE_INTERVAL_DAYS = 7
+BOARD_ROWS = 5
+LABEL_WIDTH = 36
+LABEL_MAX_LENGTH = 60
+WEEKDAYS_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 REVIEW_CONTEXT = "spaced-repetition review"
 DEFAULT_LANGUAGETOOL_URL = "http://localhost:8081/v2/check"
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
@@ -259,6 +263,150 @@ def category_rank(category: str) -> int:
     return CATEGORY_ORDER.index(category) if category in CATEGORY_ORDER else len(CATEGORY_ORDER)
 
 
+# --------------------------------------------------------------------------- German labels
+
+# German names for catalog keys that are not a plain "<word> + <case>" rule. Keys are
+# normalized with pattern_key, so spelling variants of a key share one label.
+_CATALOG_LABELS_RAW = {
+    "-ung nouns are feminine": "-ung-Wörter sind feminin",
+    "-heit/-keit nouns are feminine": "-heit/-keit sind feminin",
+    "-chen/-lein nouns are neuter": "-chen/-lein sind neutral",
+    "-ment/-um nouns are neuter": "-ment/-um sind meist neutral",
+    "-ismus nouns are masculine": "-ismus ist maskulin",
+    "nominalized infinitives are neuter": "das Essen, das Lernen",
+    "no article before profession or nationality": "kein Artikel vor Berufen",
+    "country names with article": "Länder mit Artikel",
+    "two-way preposition: location takes dative": "Wo? → Dativ",
+    "two-way preposition: direction takes accusative": "Wohin? → Akkusativ",
+    "masculine accusative -en": "den/einen im Akkusativ",
+    "n-declension nouns take -n/-en": "n-Deklination: dem Kunden",
+    "dative plural -n": "Dativ Plural: -n",
+    "predicate noun after sein takes nominative": "sein + Nominativ",
+    "pronoun case after preposition": "mir/mich nach Präposition",
+    "nach vs zu for destinations": "nach oder zu?",
+    "in vs nach for countries": "in die Türkei, nach Deutschland",
+    "seit vs vor": "seit oder vor?",
+    "am/um/im for time expressions": "am/um/im bei Zeitangaben",
+    "bei for at a person or company": "bei + Firma oder Person",
+    "zu Hause vs nach Hause": "zu Hause oder nach Hause?",
+    "finite verb in second position": "Verb an Position 2",
+    "relative clause verb to end": "Relativsatz: Verb ans Ende",
+    "separable prefix goes to clause end": "trennbares Präfix ans Ende",
+    "past participle at clause end": "Partizip ans Satzende",
+    "infinitive after modal at clause end": "Infinitiv ans Satzende",
+    "time-manner-place order": "Zeit, Art, Ort",
+    "nicht position": "Position von nicht",
+    "coordinating conjunctions keep word order": "und/aber/denn: Verb bleibt",
+    "adverb connectors trigger inversion": "deshalb/dann: Verb zuerst",
+    "dative before accusative noun objects": "Dativ vor Akkusativ",
+    "yes/no question verb first": "Ja/Nein-Frage: Verb zuerst",
+    "sein as perfect auxiliary for motion and change": "Perfekt mit sein",
+    "-ieren verbs take no ge-": "-ieren ohne ge-",
+    "inseparable prefix verbs take no ge-": "be-/ver-/er- ohne ge-",
+    "stem vowel change in du/er forms": "Vokalwechsel: du fährst",
+    "modal verbs have no -t in 3rd person": "er kann, er muss",
+    "infinitive with zu after non-modal verbs": "zu + Infinitiv",
+    "Präteritum for sein/haben/modals": "war, hatte, konnte",
+    "werden for future and passive": "werden: Futur und Passiv",
+    "hätte/wäre/würde for polite and unreal": "hätte, wäre, würde",
+    "adjective ending after der-word": "Adjektiv nach der/die/das",
+    "adjective ending after ein-word": "Adjektiv nach ein/kein/mein",
+    "adjective ending without article": "Adjektiv ohne Artikel",
+    "possessive agrees with the possessed noun": "mein/meine: das Nomen zählt",
+    "subject-verb agreement": "Subjekt und Verb",
+    "der-word endings": "dieser, jeder, welcher",
+    "-ung plural adds -en": "-ung → -ungen",
+    "feminine -e plural adds -n": "-e → -en im Plural",
+    "-in plural is -innen": "-in → -innen",
+    "umlaut plural": "Plural mit Umlaut",
+    "-s plural for loanwords": "-s-Plural: die Autos",
+    "plural after numbers above one": "Plural nach Zahlen",
+    "German nouns are capitalized": "Nomen großschreiben",
+    "dass vs das": "dass oder das?",
+    "ß after long vowel, ss after short": "ß oder ss?",
+    "compound nouns are one word": "Komposita zusammenschreiben",
+    "formal Sie is capitalized": "Sie großschreiben",
+    "umlauts are written": "Umlaute schreiben",
+    "kennen vs wissen": "kennen oder wissen?",
+    "wenn vs als vs wann": "wenn, als oder wann?",
+    "möchten vs mögen vs gern": "möchte, mag oder gern?",
+    "bekommen means receive": "bekommen heißt erhalten",
+    "eine Entscheidung treffen": "eine Entscheidung treffen",
+    "einen Termin vereinbaren": "einen Termin vereinbaren",
+    "lernen vs studieren": "lernen oder studieren?",
+    "also means therefore": "also heißt deshalb",
+    "Sie in formal exchanges": "Sie im formellen Kontext",
+    "du/Sie consistency": "du und Sie nicht mischen",
+    "formal email opening and closing": "formelle E-Mail",
+    "comma before subordinate clause": "Komma vor Nebensatz",
+    "comma before relative clause": "Komma vor Relativsatz",
+    "comma before um/ohne/anstatt zu": "Komma vor um … zu",
+}
+CATALOG_LABELS = {pattern_key(key): label for key, label in _CATALOG_LABELS_RAW.items()}
+CASE_NAMES_DE = {
+    "dative": "Dativ", "dativ": "Dativ", "dat": "Dativ",
+    "accusative": "Akkusativ", "akkusativ": "Akkusativ", "akk": "Akkusativ", "acc": "Akkusativ",
+    "genitive": "Genitiv", "genitiv": "Genitiv", "gen": "Genitiv",
+    "nominative": "Nominativ", "nominativ": "Nominativ", "nom": "Nominativ",
+}
+GENDERS_DE = {"masculine": "maskulin", "feminine": "feminin", "neuter": "neutral"}
+_CASE_WORD = re.compile(r"\b(" + "|".join(CASE_NAMES_DE) + r")\b\.?", re.IGNORECASE)
+_LABEL_RULES: tuple[tuple[re.Pattern[str], Callable[[re.Match[str]], str]], ...] = (
+    (
+        re.compile(r"^(?P<noun>.+?) is (?P<gender>masculine|feminine|neuter)$", re.IGNORECASE),
+        lambda match: f"{match['noun']} ist {GENDERS_DE[match['gender'].lower()]}",
+    ),
+    (
+        re.compile(r"^(?P<noun>.+?) plural is (?P<form>.+)$", re.IGNORECASE),
+        lambda match: f"Plural von {match['noun']}: {match['form']}",
+    ),
+    (
+        re.compile(r"^(?P<verb>.+?) past participle is (?P<form>.+)$", re.IGNORECASE),
+        lambda match: f"{match['verb']}: Partizip {match['form']}",
+    ),
+    (
+        re.compile(r"^(?P<verb>.+?) is reflexive$", re.IGNORECASE),
+        lambda match: f"{match['verb']} (reflexiv)",
+    ),
+    (
+        re.compile(r"^(?P<conj>\S+) sends (?:the )?finite verb to (?:the )?end$", re.IGNORECASE),
+        lambda match: f"{match['conj']}: Verb ans Ende",
+    ),
+)
+
+
+def _german_case_names(value: str) -> tuple[str, int]:
+    return _CASE_WORD.subn(lambda match: CASE_NAMES_DE[match.group(1).lower()], value)
+
+
+def display_label(mistake: dict[str, Any]) -> tuple[str, str]:
+    """The German name shown to the learner, and its source: custom, catalog, rule, or key."""
+    custom = (mistake.get("label") or "").strip()
+    if custom:
+        return custom, "custom"
+    raw = (mistake.get("pattern") or "").strip()
+    catalog = CATALOG_LABELS.get(mistake.get("pattern_key") or pattern_key(raw))
+    if catalog:
+        return catalog, "catalog"
+    for rule, build in _LABEL_RULES:
+        match = rule.match(raw)
+        if match:
+            return _german_case_names(build(match))[0], "rule"
+    translated, found = _german_case_names(raw)
+    return (translated, "rule") if found else (raw, "key")
+
+
+def clean_label(label: str | None) -> str | None:
+    if label is None:
+        return None
+    value = label.strip()
+    if not value:
+        raise DeutschDNAError("label must not be empty")
+    if len(value) > LABEL_MAX_LENGTH:
+        raise DeutschDNAError(f"label must be at most {LABEL_MAX_LENGTH} characters")
+    return value
+
+
 # --------------------------------------------------------------------------- scoring
 
 
@@ -299,9 +447,12 @@ def accuracy_percent(correct: int, errors: int) -> int:
 def compact(mistake: dict[str, Any]) -> dict[str, Any]:
     occurrences = int(mistake.get("occurrences", 0))
     examples = mistake.get("examples") or []
+    label, label_source = display_label(mistake)
     return {
         "id": mistake["id"],
         "pattern": mistake["pattern"],
+        "label": label,
+        "label_source": label_source,
         "category": mistake["category"],
         "status": mistake.get("status"),
         "rule": mistake.get("rule"),
@@ -331,6 +482,7 @@ def errors_between(mistake: dict[str, Any], start: datetime, end: datetime) -> i
 def public(mistake: dict[str, Any]) -> dict[str, Any]:
     """The pattern as shown to callers: the undo snapshot is summarized, not dumped."""
     view = {key: value for key, value in mistake.items() if key != "undo"}
+    view["label"], view["label_source"] = display_label(mistake)
     snapshot = mistake.get("undo")
     if snapshot:
         view["undo_available"] = {"action": snapshot.get("action"), "at": snapshot.get("at")}
@@ -592,7 +744,9 @@ class StateStore:
         verification_status: str = "not_checked",
         at: datetime | None = None,
         event_id: str | None = None,
+        label: str | None = None,
     ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+        label = clean_label(label)
         if verification_status not in VERIFICATION_STATUSES:
             raise DeutschDNAError(f"Unknown verification status '{verification_status}'")
         if not original.strip() or not corrected.strip():
@@ -646,6 +800,8 @@ class StateStore:
             existing["last_seen"] = iso(moment)
             if rule and rule.strip():
                 existing["rule"] = rule.strip()
+            if label:
+                existing["label"] = label
             existing["status"] = "active"
             existing["review_step"] = 0
             existing["consecutive_successes"] = 0
@@ -691,6 +847,7 @@ class StateStore:
                 "aliases": [],
                 "merged_from": [],
                 "undo": {"action": "record", "at": iso(moment), "state": None},
+                "label": label,
             }
             mistakes.append(mistake)
             status = "recorded"
@@ -958,9 +1115,11 @@ class StateStore:
         pattern: str | None = None,
         category: str | None = None,
         rule: str | None = None,
+        label: str | None = None,
     ) -> dict[str, Any]:
-        if pattern is None and category is None and rule is None:
-            raise DeutschDNAError("Provide --pattern, --category, or --rule")
+        if pattern is None and category is None and rule is None and label is None:
+            raise DeutschDNAError("Provide --pattern, --category, --rule, or --label")
+        label = clean_label(label)
         document = self._mistake_document()
         mistakes = document["mistakes"]
         mistake = self._require(mistakes, identifier)
@@ -1000,6 +1159,8 @@ class StateStore:
         mistake.pop("undo", None)
         if rule is not None:
             mistake["rule"] = rule.strip()
+        if label is not None:
+            mistake["label"] = label
         _atomic_write(self.mistakes_path, document)
         if new_id != previous_id:
             self._replace_session_ids(previous_id, new_id)
@@ -1063,6 +1224,7 @@ class StateStore:
                 {
                     "category": category,
                     "patterns": [item["pattern"] for item in active],
+                    "labels": [display_label(item)[0] for item in active],
                     "pattern_ids": [item["id"] for item in active],
                     "occurrences": occurrences,
                     "recent_errors": sum(recent.values()),
@@ -1123,6 +1285,7 @@ class StateStore:
         reviews = {"total": 0, "pass": 0, "hard": 0, "fail": 0}
         observed = 0
         mastered: list[str] = []
+        mastered_labels: list[str] = []
         for mistake in mistakes:
             examples_in = sum(1 for example in mistake.get("examples", []) if in_window(example.get("seen_at")))
             is_new = in_window(mistake.get("first_seen"))
@@ -1136,6 +1299,7 @@ class StateStore:
                     {
                         "id": mistake["id"],
                         "pattern": mistake["pattern"],
+                        "label": display_label(mistake)[0],
                         "category": mistake["category"],
                         "count": examples_in,
                         "last_seen": mistake.get("last_seen"),
@@ -1149,6 +1313,7 @@ class StateStore:
             observed += sum(1 for entry in mistake.get("correct_use_history", []) if in_window(entry.get("observed_at")))
             if mistake.get("status") == "mastered" and in_window(mistake.get("mastered_at")):
                 mastered.append(mistake["pattern"])
+                mastered_labels.append(display_label(mistake)[0])
         recurring.sort(key=lambda row: row["last_seen"] or "", reverse=True)
         recurring.sort(key=lambda row: -row["count"])
 
@@ -1181,6 +1346,16 @@ class StateStore:
             shown is None
             or (moment - shown >= timedelta(days=FULL_PROFILE_INTERVAL_DAYS) and last > shown)
         )
+        recurring_ids = {row["id"] for row in recurring}
+        due_ids = {row["id"] for row in due_rows}
+        ranked = sorted(
+            active_rows,
+            key=lambda row: (row["id"] not in due_ids, -row["occurrences"], row["next_review"] or "~", row["label"]),
+        )
+        board = [
+            {**row, "due": row["id"] in due_ids, "came_back": row["id"] in recurring_ids}
+            for row in ranked[:BOARD_ROWS]
+        ]
         result = {
             "as_of": iso(moment),
             "window_days": window,
@@ -1197,6 +1372,7 @@ class StateStore:
             "reviews": reviews,
             "correct_uses": observed,
             "mastered": mastered,
+            "mastered_labels": mastered_labels,
             "roleplays": {"count": len(roleplays), "scenarios": [session.get("scenario") for session in roleplays]},
             "due_now": len(due_rows),
             "due_patterns": due_rows[:5],
@@ -1205,6 +1381,8 @@ class StateStore:
             "mastered_total": sum(item.get("status") == "mastered" for item in mistakes),
             "schedule": schedule,
             "full_profile_due": full_profile_due,
+            "board": board,
+            "board_more": max(0, len(ranked) - len(board)),
         }
         result["card"] = render_recap_card(result)
         return result
@@ -1508,8 +1686,8 @@ def render_summary_text(summary: dict[str, Any]) -> str:
         top = clusters[0]
         lines.append("")
         lines.append(f"Root cause: {_label(top['category'])} · {_cluster_detail(top, recent_total)}")
-        for pattern in top["patterns"][:4]:
-            lines.append(f"  → {pattern}")
+        for name in top.get("labels", top["patterns"])[:4]:
+            lines.append(f"  → {name}")
         if len(top["patterns"]) > 4:
             lines.append(f"  → +{len(top['patterns']) - 4} more")
         for cluster in clusters[1:2]:
@@ -1518,14 +1696,14 @@ def render_summary_text(summary: dict[str, Any]) -> str:
     if weakest:
         lines.append("")
         lines.append("Weakest patterns")
-        width = max(len(row["pattern"]) for row in weakest)
+        width = max(len(row["label"]) for row in weakest)
         for row in weakest:
             lines.append(
-                f"  {row['pattern']:<{width}}  {row['accuracy_percent']:>3}%  "
+                f"  {row['label']:<{width}}  {row['accuracy_percent']:>3}%  "
                 f"{row['occurrences']} wrong · {row['right']} right · step {row['review_step']}/{row['review_steps_total']}"
             )
     if summary["due_patterns"]:
-        names = [row["pattern"] for row in summary["due_patterns"]]
+        names = [row["label"] for row in summary["due_patterns"]]
         lines.append("")
         lines.append("Due now: " + _join_limited(names, 3, summary["due_now"]))
     return "\n".join(lines)
@@ -1551,20 +1729,47 @@ def render_recap_text(recap: dict[str, Any]) -> str:
     ]
     if recap["recurring_patterns"]:
         names = [
-            row["pattern"] + (f" ×{row['count']}" if row["count"] > 1 else "") for row in recap["recurring_patterns"]
+            row.get("label", row["pattern"]) + (f" ×{row['count']}" if row["count"] > 1 else "")
+            for row in recap["recurring_patterns"]
         ]
         lines.append("Came back: " + _join_limited(names, 2, recap.get("recurring_total")))
     if recap["mastered"]:
-        lines.append("Mastered: " + _join_limited(recap["mastered"], 3))
+        lines.append("Mastered: " + _join_limited(recap.get("mastered_labels") or recap["mastered"], 3))
     if recap["due_now"]:
         lines.append(f"{_plural(recap['due_now'], 'mistake')} due for review · 5-minute challenge?")
     elif recap["next_focus"]:
-        lines.append(f"Nothing due. Weakest right now: {recap['next_focus']['pattern']}")
+        lines.append(f"Nothing due. Weakest right now: {recap['next_focus']['label']}")
     return "\n".join(lines)
 
 
+def _fit(value: str, width: int) -> str:
+    return value if len(value) <= width else value[: width - 1] + "…"
+
+
+def _ladder(step: int) -> str:
+    filled = max(0, min(step, len(REVIEW_INTERVALS)))
+    return "▰" * filled + "▱" * (len(REVIEW_INTERVALS) - filled)
+
+
+def _when_due(row: dict[str, Any], now_local: datetime) -> str:
+    if row.get("due"):
+        return "jetzt fällig"
+    stamp = row.get("next_review_local")
+    if not stamp:
+        return "-"
+    moment = datetime.fromisoformat(stamp)
+    days = (moment.date() - now_local.date()).days
+    if days <= 0:
+        return f"heute {moment:%H:%M}"
+    if days == 1:
+        return f"morgen {moment:%H:%M}"
+    if days < 7:
+        return f"{WEEKDAYS_DE[moment.weekday()]} {moment:%H:%M}"
+    return f"{moment:%d.%m.}"
+
+
 def render_recap_card(recap: dict[str, Any]) -> str:
-    """Two German status lines that open a session. Every number and time comes from the recap."""
+    """The session header and a board of the patterns in progress. Every value comes from the recap."""
     profile = recap["profile"]
     head = ["DeutschDNA", _display_name(profile)]
     level = profile.get("level")
@@ -1577,30 +1782,26 @@ def render_recap_card(recap: dict[str, Any]) -> str:
         head.append(f"{streak} {'Tag' if streak == 1 else 'Tage'} in Folge")
     else:
         head.append(f"zuletzt vor {recap['days_since_last_activity']} Tagen")
-    head.append(f"{recap['active_patterns']} Muster")
-    head.append(f"{recap['mastered_total']} gemeistert")
-
-    details = []
-    if recap["recurring_patterns"]:
-        top = recap["recurring_patterns"][0]
-        details.append(f"Zuletzt zurück: {top['pattern']}" + (f" ×{top['count']}" if top["count"] > 1 else ""))
-    elif recap["mastered"]:
-        details.append(f"Gemeistert: {recap['mastered'][0]}")
-    schedule = recap["schedule"]
-    if schedule["due_now"]:
-        count = schedule["due_now"]
-        details.append(f"{count} {'Wiederholung' if count == 1 else 'Wiederholungen'} jetzt fällig")
-    elif schedule["later_today"]:
-        count = schedule["later_today"]
-        start = schedule["later_today_first_local"][11:16]
-        verb, noun = ("wartet", "Wiederholung") if count == 1 else ("warten", "Wiederholungen")
-        details.append(f"heute ab {start} {verb} {count} {noun} auf dich")
-    elif schedule["next_local"]:
-        upcoming = datetime.fromisoformat(schedule["next_local"])
-        details.append(f"nächste Wiederholung am {upcoming:%d.%m.} um {upcoming:%H:%M}")
-    else:
-        details.append("keine Wiederholung geplant")
-    return " · ".join(head) + "\n" + " · ".join(details)
+    total = recap["active_patterns"] + recap["mastered_total"]
+    head.append(f"{recap['mastered_total']} von {total} gemeistert")
+    lines = [" · ".join(head)]
+    board = recap.get("board") or []
+    if board:
+        now_local = to_local(parse_moment(recap["as_of"]))
+        width = min(LABEL_WIDTH, max(len(row["label"]) for row in board))
+        lines.append("")
+        for row in board:
+            wrong = f"{row['occurrences']}× falsch" + (" ↺" if row.get("came_back") else "")
+            lines.append(
+                f"{_fit(row['label'], width):<{width}}  {_ladder(row['review_step'])} "
+                f"{row['review_step']}/{row['review_steps_total']}   {wrong:<11}   {_when_due(row, now_local)}"
+            )
+        if recap.get("board_more"):
+            lines.append(f"+{recap['board_more']} weitere")
+    elif recap["mastered_total"]:
+        lines.append("")
+        lines.append("Alles gemeistert ★ Schreib etwas Neues, dann suche ich die nächste Baustelle.")
+    return "\n".join(lines)
 
 
 def render_due_text(result: dict[str, Any]) -> str:
@@ -1609,7 +1810,7 @@ def render_due_text(result: dict[str, Any]) -> str:
     lines = [f"Due now: {result['count']}"]
     for index, mistake in enumerate(result["mistakes"], start=1):
         row = compact(mistake)
-        lines.append(f"{index}. {row['pattern']}  [{row['category']}]  {row['id']}")
+        lines.append(f"{index}. {row['label']}  [{row['category']}]  {row['id']}")
         lines.append(f"   Rule: {row['rule']}")
         example = row["last_example"]
         if example and example.get("original"):
@@ -1642,7 +1843,7 @@ def render_show_text(result: dict[str, Any]) -> str:
     row = compact(mistake)
     mastered = mistake.get("status") == "mastered"
     lines = [
-        f"{mistake['pattern']} · {_label(mistake['category'])} · {'mastered' if mastered else 'learning'}",
+        f"{row['label']} · {_label(mistake['category'])} · {'mastered' if mastered else 'learning'}",
         f"Rule: {mistake.get('rule')}",
         "",
     ]
@@ -1742,6 +1943,7 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--category", choices=CATEGORY_ORDER)
     record_parser.add_argument("--pattern", help="Stable root-cause key, e.g. 'mit + dative'")
     record_parser.add_argument("--rule", help="One-line rule the learner should remember")
+    record_parser.add_argument("--label", help="Short German name shown to the learner, e.g. 'hätte gern (höflich)'")
     record_parser.add_argument("--context")
     record_parser.add_argument("--verification-status", default="not_checked", choices=sorted(VERIFICATION_STATUSES))
     record_parser.add_argument("--event-id", help="Idempotency key; identical calls without one are deduplicated for 30 minutes")
@@ -1789,6 +1991,7 @@ def build_parser() -> argparse.ArgumentParser:
     rename_parser.add_argument("--pattern")
     rename_parser.add_argument("--category", choices=CATEGORY_ORDER)
     rename_parser.add_argument("--rule")
+    rename_parser.add_argument("--label", help="Short German name shown to the learner")
 
     summary_parser = subparsers.add_parser("summary", help="Show the learner's FehlerDNA profile")
     summary_parser.add_argument("--at", help="ISO-8601 summary time")
@@ -1857,6 +2060,7 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
             context=arguments.context,
             verification_status=arguments.verification_status,
             event_id=arguments.event_id,
+            label=arguments.label,
             at=parse_moment(arguments.at),
         )
         result: dict[str, Any] = {
@@ -1905,7 +2109,11 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         return {"status": "merged", "mistake": public(merged)}
     if command == "rename":
         outcome = store.rename(
-            arguments.mistake_id, pattern=arguments.pattern, category=arguments.category, rule=arguments.rule
+            arguments.mistake_id,
+            pattern=arguments.pattern,
+            category=arguments.category,
+            rule=arguments.rule,
+            label=arguments.label,
         )
         return {"status": "renamed", "previous_id": outcome["previous_id"], "mistake": public(outcome["mistake"])}
     if command == "summary":

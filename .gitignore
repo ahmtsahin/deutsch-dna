@@ -7,3 +7,4 @@ htmlcov/
 venv/
 .deutschdna/
 demo-home/
+.claude/

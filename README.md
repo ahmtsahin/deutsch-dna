@@ -73,6 +73,9 @@ Clone this repository into the skill location for your agent. The directory must
 # Claude Code, one project
 .claude/skills/deutsch-dna/
 
+# Codex, personal (all projects)
+~/.codex/skills/deutsch-dna/
+
 # Codex, repository-scoped
 .agents/skills/deutsch-dna/
 ```

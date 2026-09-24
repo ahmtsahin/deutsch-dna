@@ -1,9 +1,9 @@
-# Renders demo/deutschdna.gif for the README with VHS: https://github.com/charmbracelet/vhs
+# Renders the detailed terminal story with VHS: https://github.com/charmbracelet/vhs
 # Run from the repository root:   vhs demo/deutschdna.tape
 # Needs python and bash; macOS, Linux, and WSL work out of the box.
 # Every screen is real engine output for a four-month learner story (scripts/demo.py).
 
-Output demo/deutschdna.gif
+Output demo/history-terminal.gif
 
 Require python
 

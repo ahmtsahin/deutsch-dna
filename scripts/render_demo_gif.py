@@ -1,378 +1,243 @@
 #!/usr/bin/env python3
-"""Render README stories from real learning-loop or four-month demo state.
+"""Render readable README stories from engine records or a captured conversation.
 
-This is a contributor-only helper. DeutschDNA itself remains dependency-free;
-rendering the GIF requires Pillow.
+Pillow is only needed for this contributor tool. The learning and history stories
+use scripted learner inputs; the conversation story replays real host replies.
 """
 
 from __future__ import annotations
 
 import argparse
-import contextlib
-import io
+import json
+from pathlib import Path
+import re
 import sys
 import tempfile
-from pathlib import Path
 
 try:
     from PIL import Image, ImageDraw, ImageFont
-except ModuleNotFoundError as exc:  # pragma: no cover - contributor guidance
-    raise SystemExit("Pillow is required to render the GIF: python -m pip install pillow") from exc
+except ModuleNotFoundError as exc:
+    raise SystemExit("Install the renderer dependency: python -m pip install pillow") from exc
 
-SCRIPT_DIR = Path(__file__).resolve().parent
-sys.path.insert(0, str(SCRIPT_DIR))
-
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "scripts"))
 import demo  # noqa: E402
 import deutsch_dna as dna  # noqa: E402
 
-
-WIDTH = 1180
-HEIGHT = 760
-FRAME_DURATIONS_MS = [3000, 3400, 3000, 5000]
-LEARNING_DURATIONS_MS = [3200, 4300, 5000, 6500]
-
+WIDTH, HEIGHT = 720, 800
+QUOTE_SIZE = 42  # 18 CSS px when GitHub displays this image at 309 px wide.
 COLORS = {
-    "page": "#11111b",
-    "terminal": "#181825",
-    "border": "#45475a",
-    "text": "#cdd6f4",
-    "muted": "#7f849c",
-    "accent": "#d9ff45",
-    "blue": "#89b4fa",
-    "green": "#a6e3a1",
-    "yellow": "#f9e2af",
-    "peach": "#fab387",
-    "red": "#f38ba8",
-    "lavender": "#cba6f7",
+    "page": "#11111b", "panel": "#1b1b2b", "border": "#45475a",
+    "text": "#e4e7f5", "muted": "#b2b8ce", "accent": "#d9ff45",
+    "blue": "#9ac6ff", "green": "#b5edb0", "red": "#ff97b4",
 }
-
 FONT_CANDIDATES = (
-    Path("C:/Windows/Fonts/CascadiaMono.ttf"),
     Path("C:/Windows/Fonts/consola.ttf"),
     Path("/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"),
     Path("/usr/share/fonts/truetype/liberation2/LiberationMono-Regular.ttf"),
     Path("/System/Library/Fonts/SFNSMono.ttf"),
 )
 
-SYMBOL_FONT_CANDIDATES = (
-    Path("C:/Windows/Fonts/seguisym.ttf"),
-    Path("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"),
-    Path("/System/Library/Fonts/Apple Symbols.ttf"),
-)
-
-SYMBOLS = frozenset("▱▰↺←→✓✗★")
-
 
 def find_font(explicit: str | None) -> Path:
-    candidates = (Path(explicit).expanduser(),) if explicit else FONT_CANDIDATES
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate
-    raise SystemExit("No monospaced font found. Pass one with --font PATH.")
+    for path in (Path(explicit).expanduser(),) if explicit else FONT_CANDIDATES:
+        if path.is_file():
+            return path
+    raise ValueError("No monospaced font found; pass --font PATH")
 
 
-def find_symbol_font() -> Path:
-    for candidate in SYMBOL_FONT_CANDIDATES:
-        if candidate.is_file():
-            return candidate
-    raise SystemExit("No symbol font found for the CLI's progress and timeline glyphs.")
-
-
-def capture_cli(home: Path, arguments: tuple[str, ...]) -> str:
-    stream = io.StringIO()
-    with contextlib.redirect_stdout(stream):
-        code = dna.main(["--home", str(home), *arguments])
-    if code:
-        raise RuntimeError(f"Demo command failed with exit code {code}: {' '.join(arguments)}")
-    return stream.getvalue().strip()
-
-
-def collect_screens() -> list[tuple[str, str, str]]:
-    with tempfile.TemporaryDirectory(prefix="deutschdna-gif-") as directory:
-        home = Path(directory)
-        demo.seed(home)
-        warten_id = dna.mistake_id("preposition", "warten auf + accusative")
-        warten = dna.StateStore(home).show(warten_id)
-        wrong_moments = sorted(dna.parse_moment(example["seen_at"]) for example in warten["examples"])
-        comeback_days = (wrong_moments[-1] - wrong_moments[-2]).days
-        screens = (
-            ("01  REMEMBERS YOU", ("recap", "--format", "card")),
-            ("02  FINDS THE ROOT CAUSE", ("summary", "--format", "text")),
-            (
-                "03  SHOWS THE JOURNEY",
-                ("show", dna.mistake_id("case", "mit + dative"), "--format", "text"),
-            ),
-            (
-                f"04  {comeback_days} DAYS LATER · IT REMEMBERS",
-                ("show", warten_id, "--format", "text"),
-            ),
-        )
-        return [
-            (label, f"$ python scripts/deutsch_dna.py {' '.join(arguments)}", capture_cli(home, arguments))
-            for label, arguments in screens
-        ]
+def row(label: str, text: str, color: str = "text", *highlight: str) -> dict:
+    return {"label": label, "text": text, "color": color, "highlight": highlight}
 
 
 def collect_learning_screens() -> list[dict]:
     with tempfile.TemporaryDirectory(prefix="deutschdna-learning-gif-") as directory:
-        home = Path(directory)
-        demo.seed_learning_loop(home)
-        mistake = dna.StateStore(home).show(dna.mistake_id("case", "mit + dative"))
-        proof = dna.learning_proof_view(mistake["learning_proof"])
-        if not proof or proof["independent"]["source"] != "spontaneous":
-            raise RuntimeError("The demo must produce real transfer evidence before it can be rendered")
-        support, independent = proof["with_help"], proof["independent"]
-        practice = next(entry for entry in mistake["coaching_history"] if entry["outcome"] == "independent")
-        label = dna.display_label(mistake)[0]
-        return [
-            {
-                "stage": "01 / FIRST SESSION", "title": "Your words become the lesson.",
-                "description": "One small mistake gives your tutor something specific to remember.",
-                "rows": [("YOU WROTE", mistake["first_example"]["original"], "red"),
-                         ("THE PATTERN IT REMEMBERS", label, "text")],
-                "footer": "Your own sentence is the starting point.",
-            },
-            {
-                "stage": "02 / A SMALL HINT", "title": "You find the correction.",
-                "description": "Your tutor saves the help you used and the answer you produced.",
-                "rows": [("YOUR TUTOR", support["hint"], "blue"),
-                         ("YOU REPAIRED IT", support["answer"], "green")],
-                "footer": f"Remembered approach: {support['strategy']}",
-            },
-            {
-                "stage": "03 / A NEW SITUATION", "title": "Now try a different sentence.",
-                "description": "A fresh task gives you room to use the same structure yourself.",
-                "rows": [("YOUR NEXT TASK", practice["prompt"], "blue"),
-                         ("YOUR ANSWER, WITHOUT A HINT", practice["answer"], "green")],
-                "footer": "Correct in a new situation, without help.",
-            },
-            {
-                "stage": "04 / THE NEXT DAY", "title": "Then it notices your progress.",
-                "description": "Your tutor remembers the hint you needed the day before.",
-                "rows": [(f"{support['at_local'][:10]} / WITH A HINT", support["answer"], "text"),
-                         (f"{independent['at_local'][:10]} / UNPROMPTED", independent["answer"], "green")],
-                "footer": f"This time, you used {label} without help.",
-            },
-        ]
+        demo.seed_learning_loop(Path(directory))
+        mistake = dna.StateStore(Path(directory)).show(dna.mistake_id("case", "mit + dative"))
+    proof = dna.learning_proof_view(mistake["learning_proof"])
+    if not proof or proof["independent"]["source"] != "spontaneous":
+        raise ValueError("The opening frame requires recorded later, unaided use")
+    support, independent = proof["with_help"], proof["independent"]
+    practice = next(item for item in mistake["coaching_history"] if item["outcome"] == "independent")
+    return [
+        {"stage": "THE NEXT DAY", "title": "You did it yourself.", "duration": 4200,
+         "rows": [row("YESTERDAY / WITH A HINT", support["answer"], "text", "meinem"),
+                  row("TODAY / WITHOUT HELP", independent["answer"], "green", "unseren")],
+         "footer": "Same pattern. A new sentence."},
+        {"stage": "HOW IT STARTED", "title": "A hint. Your turn.", "duration": 3400,
+         "rows": [row("YOU WROTE", mistake["first_example"]["original"], "red", "mein"),
+                  row("YOUR TUTOR", support["hint"], "blue", "wem")],
+         "footer": "You get room to find the fix."},
+        {"stage": "YOU FOUND THE FIX", "title": "Now try it again.", "duration": 3400,
+         "rows": [row("YOUR REPAIR", support["answer"], "green", "meinem"),
+                  row("NEW PRACTICE / NO HINT", practice["answer"], "green", "dem")],
+         "footer": "Your tutor remembers what helped."},
+    ]
+
+
+def collect_history_screens() -> list[dict]:
+    with tempfile.TemporaryDirectory(prefix="deutschdna-history-gif-") as directory:
+        demo.seed(Path(directory))
+        mistake = dna.StateStore(Path(directory)).show(dna.mistake_id("preposition", "warten auf + accusative"))
+    wrong = sorted(mistake["examples"], key=lambda item: dna.parse_moment(item["seen_at"]))
+    gap = (dna.parse_moment(wrong[-1]["seen_at"]) - dna.parse_moment(wrong[-2]["seen_at"])).days
+    original = mistake["first_example"]
+    hint = mistake["helpful_hint"]
+    return [
+        {"stage": "AN OLD MISTAKE RETURNS", "title": f"{gap} days later.", "duration": 4500,
+         "rows": [row("YOUR FIRST MISTAKE", original["original"], "red", "warte"),
+                  row("IT COMES BACK", wrong[-1]["original"], "red", "warte")],
+         "footer": "The first sentence is still saved."},
+        {"stage": "YOUR TUTOR REMEMBERS", "title": "Pick up from here.", "duration": 4500,
+         "rows": [row("THE ORIGINAL CORRECTION", original["corrected"], "green", "auf"),
+                  row("THE HINT THAT HELPED", hint["hint"], "blue", "auf")],
+         "footer": "Back in practice, with your history."},
+    ]
+
+
+def plain(text: str) -> str:
+    """Remove emphasis markers for the visual replay, preserving the actual words."""
+    return re.sub(r"[*_`]", "", text).strip()
+
+
+def checked_excerpt(text: str, excerpt: str) -> str:
+    if excerpt not in plain(text):
+        raise ValueError(f"The recording does not contain this excerpt: {excerpt!r}")
+    return excerpt
+
+
+def collect_conversation_screens(source: Path) -> list[dict]:
+    recording = json.loads(source.read_text(encoding="utf-8"))
+    first, repair, fresh = recording["exchanges"]
+    # Excerpts are checked against the captured replies, never invented by the renderer.
+    return [
+        {"stage": "CLAUDE CODE / CHAT 1", "title": "A real exchange.", "duration": 5000,
+         "rows": [row("SCRIPTED LEARNER", checked_excerpt(first["learner"], "Ich spreche mit mein Chef."), "red", "mein"),
+                  row("TUTOR / EXCERPT", checked_excerpt(first["tutor"], "Which case does mit take?"), "blue", "mit")],
+         "footer": "Actual reply. Time compressed."},
+        {"stage": "CLAUDE CODE / CHAT 1", "title": "You make the repair.", "duration": 4500,
+         "rows": [row("SCRIPTED LEARNER", checked_excerpt(repair["learner"], "Ich spreche mit meinem Chef."), "green", "meinem"),
+                  row("TUTOR / EXCERPT", checked_excerpt(repair["tutor"], "mein becomes meinem"), "blue", "meinem")],
+         "footer": "The hint and repair are saved."},
+        {"stage": "CLAUDE CODE / A NEW CHAT", "title": "The memory carries on.", "duration": 6500,
+         "rows": [row("SCRIPTED LEARNER", checked_excerpt(fresh["learner"], "Heute habe ich mit unseren Kunden gesprochen."), "green", "unseren"),
+                  row("IT RECALLS THE SAME HINT", checked_excerpt(fresh["tutor"], recording["evidence"]["coaching_history"][0]["hint"]), "blue")],
+         "footer": "New chat. Same day. Shared memory."},
+    ]
 
 
 def wrap_text(text: str, font: ImageFont.FreeTypeFont, width: int) -> list[str]:
     lines, current = [], ""
     for word in text.split():
+        if font.getlength(word) > width:
+            raise ValueError(f"A word does not fit: {word!r}")
         candidate = f"{current} {word}".strip()
         if current and font.getlength(candidate) > width:
             lines.append(current)
             current = word
         else:
             current = candidate
-    if current:
-        lines.append(current)
-    if len(lines) == 2:
-        words = text.split()
-        candidates = [(" ".join(words[:index]), " ".join(words[index:])) for index in range(1, len(words))]
-        candidates = [pair for pair in candidates if all(font.getlength(line) <= width for line in pair)]
-        if candidates:
-            sentence_breaks = [pair for pair in candidates if pair[0].endswith((".", "?", "!", ":"))]
-            candidates = sentence_breaks or candidates
-            lines = list(min(candidates, key=lambda pair: abs(font.getlength(pair[0]) - font.getlength(pair[1]))))
-    if any(font.getlength(line) > width for line in lines):
-        raise ValueError("Story text exceeds its panel width")
-    return lines
+    return lines + ([current] if current else [])
 
 
-def render_learning_frame(screen: dict, index: int, count: int, font_path: Path) -> Image.Image:
-    heading = ImageFont.truetype(str(font_path), 40)
-    quote = ImageFont.truetype(str(font_path), 32)
-    body = ImageFont.truetype(str(font_path), 22)
-    small = ImageFont.truetype(str(font_path), 19)
+def draw_quote(draw: ImageDraw.ImageDraw, text: str, position: tuple[int, int],
+               font: ImageFont.FreeTypeFont, color: str, highlights: tuple[str, ...]) -> None:
+    lines = wrap_text(text, font, WIDTH - 112)
+    if len(lines) > 3:
+        raise ValueError(f"Quote exceeds three readable lines; shorten the excerpt: {text!r}")
+    left, top = position
+    for index, line in enumerate(lines):
+        x, y = left, top + index * 50
+        for part in re.findall(r"\s+|\S+", line):
+            marked = part.strip(".,?!:;„“\"'").casefold() in {word.casefold() for word in highlights}
+            draw.text((x, y), part, font=font, fill=COLORS[color] if marked or not highlights else COLORS["text"])
+            width = font.getlength(part)
+            if marked:
+                draw.line((x, y + 44, x + width, y + 44), fill=COLORS[color], width=3)
+            x += width
+
+
+def render_frame(screen: dict, index: int, count: int, font_path: Path, *,
+                 second_row: bool = True, conversation: bool = False) -> Image.Image:
+    heading = ImageFont.truetype(str(font_path), 50)
+    quote = ImageFont.truetype(str(font_path), QUOTE_SIZE)
+    label = ImageFont.truetype(str(font_path), 28)
     image = Image.new("RGB", (WIDTH, HEIGHT), COLORS["page"])
     draw = ImageDraw.Draw(image)
-    draw.rounded_rectangle((24, 24, WIDTH - 24, HEIGHT - 24), radius=22, fill=COLORS["terminal"])
-    draw.text((52, 44), "DeutschDNA", font=body, fill=COLORS["accent"])
-    badge = "SCRIPTED LEARNER / REAL ENGINE"
-    draw.text((WIDTH - 52 - small.getlength(badge), 47), badge, font=small, fill=COLORS["muted"])
-    draw.text((52, 96), screen["stage"], font=small, fill=COLORS["accent"])
-    if heading.getlength(screen["title"]) > WIDTH - 104:
-        raise ValueError("Story title exceeds its available width")
-    draw.text((50, 129), screen["title"], font=heading, fill=COLORS["text"])
-    draw.text((52, 190), screen["description"], font=body, fill=COLORS["text"])
+    draw.text((32, 22), "DeutschDNA", font=label, fill=COLORS["accent"])
+    step = f"{index + 1} / {count}"
+    draw.text((WIDTH - 32 - label.getlength(step), 22), step, font=label, fill=COLORS["muted"])
+    for text, font, y, color in ((screen["stage"], label, 76, "accent"),
+                               (screen["title"], heading, 115, "text")):
+        if font.getlength(text) > WIDTH - 64:
+            raise ValueError(f"Heading is too wide: {text!r}")
+        draw.text((32, y), text, font=font, fill=COLORS[color])
 
-    for row_index, (label, text, color) in enumerate(screen["rows"]):
-        top = 245 + row_index * 187
-        draw.rounded_rectangle((50, top, WIDTH - 50, top + 166), radius=14,
-                               fill=COLORS["page"], outline=COLORS["border"], width=1)
-        draw.text((76, top + 19), label, font=small, fill=COLORS["muted"])
-        lines = wrap_text(text, quote, WIDTH - 152)
-        if len(lines) > 2:
-            raise ValueError("Story quote exceeds its two-line panel")
-        for line_index, line in enumerate(lines):
-            draw.text((76, top + 56 + line_index * 40), line, font=quote, fill=COLORS[color])
+    for number, item in enumerate(screen["rows"]):
+        if number == 1 and not second_row:
+            continue
+        top = 195 + number * 240
+        draw.rounded_rectangle((32, top, WIDTH - 32, top + 222), radius=20,
+                               fill=COLORS["panel"], outline=COLORS["border"], width=2)
+        if conversation:
+            draw.line((33, top + 22, 33, top + 200), fill=COLORS[item["color"]], width=4)
+        if label.getlength(item["label"]) > WIDTH - 112:
+            raise ValueError(f"Row label is too wide: {item['label']!r}")
+        draw.text((56, top + 16), item["label"], font=label, fill=COLORS["muted"])
+        draw_quote(draw, item["text"], (56, top + 66), quote, item["color"], item["highlight"])
 
-    draw.text((52, 635), screen["footer"], font=body, fill=COLORS["accent"])
-    track_width = (WIDTH - 104 - 30) // count
-    for stage in range(count):
-        left = 52 + stage * (track_width + 10)
-        color = COLORS["accent"] if stage <= index else COLORS["border"]
-        draw.rounded_rectangle((left, 698, left + track_width, 702), radius=2, fill=color)
-    return image
-
-
-def ellipsize(text: str, font: ImageFont.FreeTypeFont, width: int) -> str:
-    if font.getlength(text) <= width:
-        return text
-    low, high = 0, len(text)
-    while low < high:
-        middle = (low + high + 1) // 2
-        candidate = f"{text[:middle]}…"
-        if font.getlength(candidate) <= width:
-            low = middle
-        else:
-            high = middle - 1
-    return f"{text[:low]}…"
-
-
-def color_for_line(line: str) -> str:
-    if line.startswith("DeutschDNA"):
-        return COLORS["accent"]
-    if line.startswith("Ursache:") or line.startswith("  →"):
-        return COLORS["lavender"]
-    if "✗" in line or "← schwach" in line:
-        return COLORS["red"]
-    if "✓" in line:
-        return COLORS["green"]
-    if "★" in line:
-        return COLORS["yellow"]
-    if line.startswith("Jetzt fällig:"):
-        return COLORS["peach"]
-    if line.startswith("Regel:"):
-        return COLORS["blue"]
-    return COLORS["text"]
-
-
-def draw_monospace_line(
-    draw: ImageDraw.ImageDraw,
-    position: tuple[int, int],
-    text: str,
-    body_font: ImageFont.FreeTypeFont,
-    symbol_font: ImageFont.FreeTypeFont,
-    fill: str,
-    max_width: int,
-) -> None:
-    x, y = position
-    cell_width = body_font.getlength("M")
-    max_characters = max(1, int(max_width // cell_width))
-    visible = text if len(text) <= max_characters else f"{text[: max_characters - 1]}…"
-    for index, character in enumerate(visible):
-        font = symbol_font if character in SYMBOLS else body_font
-        character_width = font.getlength(character)
-        character_x = x + index * cell_width + max(0, (cell_width - character_width) / 2)
-        draw.text((character_x, y), character, font=font, fill=fill)
-
-
-def render_frame(
-    screen: tuple[str, str, str],
-    index: int,
-    count: int,
-    fonts: tuple[ImageFont.FreeTypeFont, ...],
-) -> Image.Image:
-    label_font, prompt_font, body_font, small_font, symbol_font = fonts
-    label, command, output = screen
-    image = Image.new("RGB", (WIDTH, HEIGHT), COLORS["page"])
-    draw = ImageDraw.Draw(image)
-
-    draw.rounded_rectangle(
-        (26, 26, WIDTH - 26, HEIGHT - 26),
-        radius=22,
-        fill=COLORS["terminal"],
-        outline=COLORS["border"],
-        width=2,
-    )
-    for offset, color in enumerate((COLORS["red"], COLORS["yellow"], COLORS["green"])):
-        left = 50 + offset * 23
-        draw.ellipse((left, 49, left + 12, 61), fill=color)
-
-    draw.text((50, 82), label, font=label_font, fill=COLORS["accent"])
-    badge = "REAL ENGINE  ·  120 DAYS  ·  LOCAL JSON"
-    badge_width = small_font.getlength(badge)
-    draw.text((WIDTH - 52 - badge_width, 88), badge, font=small_font, fill=COLORS["muted"])
-
-    draw.text((50, 124), ellipsize(command, prompt_font, WIDTH - 100), font=prompt_font, fill=COLORS["blue"])
-    draw.line((50, 154, WIDTH - 50, 154), fill=COLORS["border"], width=1)
-
-    y = 176
-    line_height = 23
-    for line in output.splitlines():
-        if y + line_height > 686:
-            draw.text((50, y), "…", font=body_font, fill=COLORS["muted"])
-            break
-        draw_monospace_line(
-            draw,
-            (50, y),
-            line,
-            body_font,
-            symbol_font,
-            color_for_line(line),
-            WIDTH - 100,
-        )
-        y += line_height
-
-    draw.line((50, 700, WIDTH - 50, 700), fill=COLORS["border"], width=1)
-    draw.text((50, 714), "Generated from scripts/demo.py — no hard-coded scores", font=small_font, fill=COLORS["muted"])
-    for dot in range(count):
-        color = COLORS["accent"] if dot == index else COLORS["border"]
-        left = WIDTH - 50 - ((count - dot) * 18)
-        draw.ellipse((left, 716, left + 8, 724), fill=color)
-
+    if label.getlength(screen["footer"]) > WIDTH - 64:
+        raise ValueError(f"Footer is too wide: {screen['footer']!r}")
+    draw.text((32, 692), screen["footer"], font=label, fill=COLORS["text"])
+    disclosure = "Recorded chat / excerpt replay" if conversation else "Scripted learner / real engine"
+    draw.text((32, 731), disclosure, font=label, fill=COLORS["muted"])
+    track = (WIDTH - 64 - (count - 1) * 10) / count
+    for step_index in range(count):
+        x = 32 + step_index * (track + 10)
+        draw.rounded_rectangle((x, 777, x + track, 781), radius=2,
+                               fill=COLORS["accent"] if step_index == index else COLORS["border"])
     return image
 
 
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description="Render demo/deutschdna.gif from the real demo engine")
-    parser.add_argument("--story", choices=("history", "learning-loop"), default="history")
-    parser.add_argument("--output", help="Output GIF path; defaults to demo/deutschdna.gif or demo/learning-loop.gif")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--story", choices=("history", "learning-loop", "conversation"), default="learning-loop")
+    parser.add_argument("--output", type=Path, help="Output GIF; a static PNG is saved beside it")
     parser.add_argument("--font", help="Path to a monospaced TrueType font")
-    parser.add_argument("--frames-dir", help="Also save PNG frames for visual inspection")
+    parser.add_argument("--frames-dir", type=Path, help="Save full-size and 309 px wide PNGs for review")
+    parser.add_argument("--transcript", type=Path, default=ROOT / "demo" / "conversation.json")
     arguments = parser.parse_args(argv)
-
-    font_path = find_font(arguments.font)
-    symbol_font_path = find_symbol_font()
-    fonts = (
-        ImageFont.truetype(str(font_path), 22),
-        ImageFont.truetype(str(font_path), 16),
-        ImageFont.truetype(str(font_path), 16),
-        ImageFont.truetype(str(font_path), 13),
-        ImageFont.truetype(str(symbol_font_path), 17),
-    )
+    font = find_font(arguments.font)
     if arguments.story == "learning-loop":
-        screens = collect_learning_screens()
-        frames = [render_learning_frame(screen, index, len(screens), font_path) for index, screen in enumerate(screens)]
-        durations = LEARNING_DURATIONS_MS
-        default_output = "demo/learning-loop.gif"
+        screens, filename = collect_learning_screens(), "learning-loop"
+    elif arguments.story == "history":
+        screens, filename = collect_history_screens(), "deutschdna"
     else:
-        screens = collect_screens()
-        frames = [render_frame(screen, index, len(screens), fonts) for index, screen in enumerate(screens)]
-        durations = FRAME_DURATIONS_MS
-        default_output = "demo/deutschdna.gif"
-
-    output = Path(arguments.output or default_output)
+        screens, filename = collect_conversation_screens(arguments.transcript), "conversation"
+    frames, durations, complete = [], [], []
+    for index, screen in enumerate(screens):
+        conversation = arguments.story == "conversation"
+        full = render_frame(screen, index, len(screens), font, conversation=conversation)
+        complete.append(full)
+        # Let the learner message arrive before the recorded tutor reply.
+        if conversation:
+            frames.append(render_frame(screen, index, len(screens), font, second_row=False, conversation=True))
+            durations.append(600)
+        frames.append(full)
+        durations.append(screen["duration"] - (600 if conversation else 0))
+    output = arguments.output or ROOT / "demo" / f"{filename}.gif"
     output.parent.mkdir(parents=True, exist_ok=True)
-    frames[0].save(
-        output,
-        save_all=True,
-        append_images=frames[1:],
-        duration=durations,
-        loop=0,
-        optimize=True,
-        disposal=2,
-    )
-    if arguments.story == "learning-loop":
-        frames[-1].save(output.with_suffix(".png"))
+    frames[0].save(output, save_all=True, append_images=frames[1:], duration=durations,
+                   loop=0, optimize=True, disposal=2)
+    # The first complete frame is also the opening result, so no waiting is needed.
+    complete[0].save(output.with_suffix(".png"))
     if arguments.frames_dir:
-        frames_dir = Path(arguments.frames_dir)
-        frames_dir.mkdir(parents=True, exist_ok=True)
-        for index, frame in enumerate(frames, 1):
-            frame.save(frames_dir / f"frame-{index}.png")
-    print(f"Rendered {len(frames)} real-engine screens to {output}")
+        arguments.frames_dir.mkdir(parents=True, exist_ok=True)
+        for index, frame in enumerate(complete, 1):
+            frame.save(arguments.frames_dir / f"{filename}-{index}.png")
+            frame.resize((309, round(HEIGHT * 309 / WIDTH)), Image.Resampling.LANCZOS).save(
+                arguments.frames_dir / f"{filename}-{index}-mobile.png")
+    print(f"Rendered {len(screens)} scenes / {sum(durations) / 1000:g}s to {output}")
     return 0
 
 

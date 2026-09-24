@@ -1,0 +1,58 @@
+{
+  "host": "Claude Code",
+  "models": [
+    "claude-opus-5-5"
+  ],
+  "recorded_at": "2026-09-24T16:35:57+00:00",
+  "disclosure": "Scripted learner messages; actual, unedited tutor replies from two separate Claude Code chats sharing an isolated DeutschDNA state directory. Both chats were recorded on the same day. No simulated time jump.",
+  "exchanges": [
+    {
+      "session": 1,
+      "learner": "Use /deutsch-dna-demo. Please explain in English and keep replies brief. I'd like to practise my German: Ich spreche mit mein Chef.",
+      "tutor": "Good sentence, and I understand it. There's one small thing to fix.\n\nLook at **mit mein Chef** again. Which case does *mit* take? Try writing the sentence again.",
+      "seconds": 10.5,
+      "helper_calls": 2
+    },
+    {
+      "session": 1,
+      "learner": "Ich spreche mit meinem Chef.",
+      "tutor": "✓ Right. *mit* always takes the dative, so *mein* becomes **meinem** for a masculine noun like *der Chef*.\n\nI've saved this as **mit + Dativ**. It comes back tomorrow at 18:30 in a new sentence.\n\nNow try a new situation: you go to work every day by car (*das Auto*). Write one sentence in German using *mit*.",
+      "seconds": 9.7,
+      "helper_calls": 2
+    },
+    {
+      "session": 2,
+      "learner": "Use /deutsch-dna-demo. Please explain in English and keep replies brief. Heute habe ich mit unseren Kunden gesprochen. How does that compare with what I practised earlier?",
+      "tutor": "Your sentence is correct, and it shows exactly the pattern you practised: **mit + Dativ**.\n\n```text\nEarlier (18:30): „Ich spreche mit mein Chef\" → with a hint: „Ich spreche mit meinem Chef\" ✓\nNow:             „Heute habe ich mit unseren Kunden gesprochen.\" ✓ no help\n```\n\n- **Then:** you needed the hint *“Which case does mit take?”* to get *meinem*.\n- **Now:** you got it right with no hint, and in a harder form: dative **plural**. *unser-* takes **-en**, and the noun gets **-n** too (*Kunden*).\n\nI've saved this as a correct use. It came only a few minutes after the hint, though, so the real test is your review **tomorrow at 18:30**, when I'll give you a new sentence.\n\nWhat did the customers want?",
+      "seconds": 14.1,
+      "helper_calls": 2
+    }
+  ],
+  "evidence": {
+    "pattern": "mit + dative",
+    "first_example": {
+      "context": null,
+      "corrected": "Ich spreche mit meinem Chef.",
+      "event_id": "auto_90d631c8cf6d75ea",
+      "original": "Ich spreche mit mein Chef.",
+      "seen_at": "2026-09-24T16:30:26Z"
+    },
+    "coaching_history": [
+      {
+        "answer": "Ich spreche mit meinem Chef.",
+        "at": "2026-09-24T16:30:29Z",
+        "hint": "Which case does mit take?",
+        "id": "c_0ca77bc65777",
+        "outcome": "assisted",
+        "prompt": "Look at mit mein Chef again. Which case does mit take?",
+        "strategy": "Kasusfrage"
+      }
+    ],
+    "correct_use_history": [
+      {
+        "context": "Heute habe ich mit unseren Kunden gesprochen.",
+        "observed_at": "2026-09-24T16:32:06Z"
+      }
+    ]
+  }
+}

@@ -1,5 +1,7 @@
 # DeutschDNA
 
+[![Tests](https://github.com/ahmtsahin/deutsch-dna/actions/workflows/tests.yml/badge.svg)](https://github.com/ahmtsahin/deutsch-dna/actions/workflows/tests.yml)
+
 > You learn German. Your tutor remembers what helped.
 
 **Yesterday, you needed a hint. Today, you got it right on your own.**
@@ -64,21 +66,21 @@ Both stories use scripted learner inputs and real engine state. Scores describe 
 
 ## Install
 
-Clone this repository into the skill location for your agent. The directory must contain `SKILL.md`.
+Clone the repository into your agent's skill folder. Keep the folder name `deutsch-dna`: it must match the skill's name.
 
-```text
-# Claude Code, personal (all projects)
-~/.claude/skills/deutsch-dna/
+Claude Code, for all your projects:
 
-# Claude Code, one project
-.claude/skills/deutsch-dna/
-
-# Codex, personal (all projects)
-~/.codex/skills/deutsch-dna/
-
-# Codex, repository-scoped
-.agents/skills/deutsch-dna/
+```bash
+git clone https://github.com/ahmtsahin/deutsch-dna.git "$HOME/.claude/skills/deutsch-dna"
 ```
+
+Codex, for all your projects:
+
+```bash
+git clone https://github.com/ahmtsahin/deutsch-dna.git "$HOME/.codex/skills/deutsch-dna"
+```
+
+The commands work in macOS and Linux terminals and in PowerShell. For a single project, clone into `.claude/skills/deutsch-dna` (Claude Code) or `.agents/skills/deutsch-dna` (Codex) inside that project instead. To update later, run `git pull` in the skill folder.
 
 See the official [Claude Code skill guide](https://code.claude.com/docs/en/skills) and [Codex skill guide](https://developers.openai.com/codex/build-skills) for discovery rules. Python 3.10+ is required; nothing needs to be installed. On Windows, the `py -3` launcher works where `python` only opens the Microsoft Store.
 

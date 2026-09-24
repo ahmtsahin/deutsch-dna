@@ -4,7 +4,7 @@
 
 Use this compact structure when an actual error exists:
 
-When the learner wants practice, first invite repair of one confirmed error with a small cue, as described in [the learning loop](learning-loop.md), and wait before revealing that correction. For a direct correction request, show the correction immediately. In ordinary conversation, respond to the meaning and continue with one relevant question after feedback; a correction-only request does not need a question.
+When the learner wants practice, first invite repair of one confirmed error with a small cue, as described in [the learning loop](learning-loop.md), and wait before revealing that correction. Record it after their attempt: hosts show every command, and `--corrected` would reveal the answer. For a direct correction request, show the correction immediately. In ordinary conversation, respond to the meaning and continue with one relevant question after feedback; a correction-only request does not need a question.
 
 ```text
 Dein Satz

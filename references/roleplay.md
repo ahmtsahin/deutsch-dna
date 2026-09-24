@@ -33,8 +33,8 @@ Use the actual learner's name only if they supplied it. Do not fabricate “Ahme
 Log actual utterances as they happen. Use the actual partner line you deliver and the learner's verbatim input:
 
 ```text
-python <skill-root>/scripts/deutsch_dna.py roleplay-turn s_... --speaker partner --text "Guten Abend. Haben Sie reserviert?" --event-id message-1
-python <skill-root>/scripts/deutsch_dna.py roleplay-turn s_... --speaker learner --text "Ja wir haben eine reservierung für zwei person." --event-id message-2
+python <skill-root>/scripts/deutsch_dna.py roleplay-turn s_... --speaker partner --text 'Guten Abend. Haben Sie reserviert?' --event-id message-1
+python <skill-root>/scripts/deutsch_dna.py roleplay-turn s_... --speaker learner --text 'Ja wir haben eine reservierung für zwei person.' --event-id message-2
 ```
 
 Keep the returned turn IDs for the debrief. Use source message IDs when available, or one stable ID per actual message; reuse only for a retry. A repeated sentence in a different learner message is a different turn. The CLI logs text and time without grading it. Keep all local state operations out of the spoken dialogue.
@@ -61,7 +61,7 @@ This changes the session to `debriefing` and freezes its elapsed duration and le
 Review the real utterances. Record confirmed root causes in turn order, once per root cause per actual learner sentence. Use the full original sentence and complete minimal correction as usual. Link every occurrence to its source so repetition counts are session-specific:
 
 ```text
-python <skill-root>/scripts/deutsch_dna.py record --session-id s_... --turn-id t_... --original "Wir sind zwei Person." --corrected "Wir sind zwei Personen." --category plural --pattern "Person plural is Personen" --rule "Plural: Personen"
+python <skill-root>/scripts/deutsch_dna.py record --session-id s_... --turn-id t_... --original 'Wir sind zwei Person.' --corrected 'Wir sind zwei Personen.' --category plural --pattern 'Person plural is Personen' --rule 'Plural: Personen'
 ```
 
 Use `--mistake-id` for a known pattern. Linked records use the turn timestamp automatically. Ordinary `record` calls without a session link do not contribute to the scene's report. Retries of a linked record do not double-count; a new wrong sentence in another turn does count. Do not record the same occurrence through both `grade fail` and `record`.
@@ -75,7 +75,7 @@ For a known pattern used correctly without prompting, `observe --context "..."` 
 Select at most five useful words or phrases actually encountered. Keep articles with nouns and use the learner's explanation language for meanings:
 
 ```text
-python <skill-root>/scripts/deutsch_dna.py roleplay-vocab s_... --term "reservieren" --surface "reserviert" --meaning "rezervasyon yapmak" --turn-id t_...
+python <skill-root>/scripts/deutsch_dna.py roleplay-vocab s_... --term 'reservieren' --surface 'reserviert' --meaning 'rezervasyon yapmak' --turn-id t_...
 ```
 
 `--surface` is the actual inflected form in that learner or partner turn. Omit it when the dictionary form appears verbatim. The engine checks the cited form against the stored utterance; the agent judges whether the dictionary form and meaning are appropriate. Do not invent words to fill a list. The report calls these **scene vocabulary**, since it cannot know which words were new to the learner.

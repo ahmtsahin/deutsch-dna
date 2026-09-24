@@ -77,31 +77,57 @@ Clone this repository into the skill location for your agent. The directory must
 .agents/skills/deutsch-dna/
 ```
 
-See the official [Claude Code skill guide](https://code.claude.com/docs/en/skills) and [Codex skill guide](https://developers.openai.com/codex/build-skills) for discovery rules. Python 3.10+ is required; nothing needs to be installed.
+See the official [Claude Code skill guide](https://code.claude.com/docs/en/skills) and [Codex skill guide](https://developers.openai.com/codex/build-skills) for discovery rules. Python 3.10+ is required; nothing needs to be installed. On Windows, the `py -3` launcher works where `python` only opens the Microsoft Store.
+
+### Let it save without asking
+
+The skill keeps your progress in `~/.deutschdna` through a small Python helper. Out of the box, your agent asks before each helper call, or its sandbox blocks the folder. One optional setting removes those interruptions.
+
+**Claude Code** asks before helper calls, and “don't ask again” applies only to the current project. To stop the questions everywhere, add these rules to `~/.claude/settings.json`:
+
+```json
+{
+  "permissions": {
+    "allow": [
+      "Bash(python *deutsch_dna.py*)",
+      "PowerShell(python *deutsch_dna.py*)",
+      "Read(~/.claude/skills/deutsch-dna/**)"
+    ]
+  }
+}
+```
+
+Use `python3` or `py` instead of `python` if that is how your system runs Python. These rules allow Python commands that mention the helper, so keep them only if you trust the skill folder.
+
+**Codex** runs commands in a sandbox that may write only to your project. Create the folder once, for example by running `python scripts/deutsch_dna.py recap` in a normal terminal, and then list it as a writable root in `~/.codex/config.toml`:
+
+```toml
+[sandbox_workspace_write]
+writable_roots = ["/Users/you/.deutschdna"]   # Windows: ['C:\Users\you\.deutschdna']
+```
+
+The folder must exist first; a writable root that does not exist yet cannot be created from inside the sandbox. Without this setting, Codex needs your approval to run the helper outside the sandbox.
 
 ## Use it
 
-Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or write German and ask for feedback. No profile form or commands to memorize: the skill explains itself in a familiar language, asks one easy question, and starts a small German task. If you already sent a text or requested a scene, it helps with that immediately.
+Invoke it with `/deutsch-dna` in Claude Code or `$deutsch-dna` in Codex, or write German and ask for feedback. No profile form or commands to memorize: the skill introduces itself in a few lines and gives you one small German task right away. If you already sent a text or requested a scene, it helps with that immediately.
 
 ### Your first minute
 
-The welcome is brief and adapted to your explanation language. For example:
+The welcome is brief. It uses your language when it knows it; after a bare `/deutsch-dna`, it starts in English and switches to the language you answer in:
 
 ```text
-Hi! I'm DeutschDNA, your German practice partner.
+Hi! I'm DeutschDNA, your German practice partner. I correct what you write,
+practise everyday situations with you, and remember the mistakes you repeat
+and the hints that helped.
 
-We can have short conversations, correct your writing, and practise everyday
-situations. I remember recurring mistakes and the hints that helped you.
+Let's start: what did you do today? Write one sentence in German.
+Just starting? Complete: Ich heiße … (My name is …)
 
-Just write normally; you don't need to learn commands.
-
-How would you describe your German: just starting, know a little,
-or comfortable having a conversation?
+You can answer in your own language; I'll explain things in it.
 ```
 
-“Just starting” leads to one tiny phrase with its meaning, such as `Ich heiße …` (“My name is …”), for you to personalize. “Know a little” leads to one or two sentences about your day. “I'm not sure” is welcome too; you do not need a CEFR level to begin. Your name and goals are optional.
-
-After your answer, you get one useful piece of feedback and a natural next question. A correct first sentence completes the introduction without creating a fake mistake or score. If you pause, the next session resumes where you left off. The full progress profile comes when you ask or at a later weekly review.
+There is no level test first. If your sentence has a mistake, you get a small hint instead of the answer, fix it yourself, and then use the same structure in a new situation. A correct first sentence gets a small step up instead, without a fake mistake or score. Your name and goals are optional. If you pause, the next session resumes where you left off. The full progress profile comes when you ask or at a later weekly review.
 
 ### Ask naturally
 
@@ -192,6 +218,15 @@ The two history renderers write `demo/deutschdna.gif`.
 ```bash
 python -m unittest discover -s tests -v
 ```
+
+The unit tests cover the engine. To check what a new learner experiences in a real agent, run the first-session check. A small Claude model plays a learner who writes one wrong sentence, repairs it after a hint, and answers a new situation; the script then checks the transcript and the saved records:
+
+```bash
+python evals/first_session.py --host claude
+python evals/first_session.py --host codex --model gpt-6-astra
+```
+
+It uses a copy of this working tree under the name `deutsch-dna-smoke` and a temporary state folder, and it fails if `~/.deutschdna` changes. Each run makes real model calls and takes a few minutes. `--setup none` shows what happens before the one-time permission setup, and `--runs 3` repeats the session.
 
 ## Roadmap
 

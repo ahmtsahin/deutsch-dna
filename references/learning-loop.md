@@ -4,15 +4,16 @@ The learner practises German; the coach remembers the support used and the obser
 
 ## A first win
 
-1. Respond to the content of the learner's message. Choose one confirmed, manageable root cause. Record the actual error once, but keep its corrected form out of the conversation until the learner has tried repairing it. Skip the guessing step when they ask for direct correction.
+1. Respond to the content of the learner's message. Choose one confirmed, manageable root cause. Keep its corrected form out of the conversation until the learner has tried repairing it, and do not run `record` yet: hosts show every command, and its `--corrected` text would give the answer away. Skip the guessing step when they ask for direct correction; then record right away.
 2. Invite self-repair with a small cue, such as “Schau noch einmal auf mit mein Chef.” Wait for the learner. If needed, offer one more specific cue; use the prior `coaching.helpful_hint` when it fits. If `last_attempt` shows that this approach just failed, change the explanation instead of repeating it indefinitely.
-3. Once they answer, record what actually happened:
+3. Once they answer, record the original error once, then what actually happened in the attempt. Run `record` before `coach`: an error saved after the assisted attempt looks like a recurrence after the help and blocks the next day's evidence.
 
    ```text
-   python <skill-root>/scripts/deutsch_dna.py coach <mistake-id> --outcome assisted --prompt "Schau noch einmal auf mit mein Chef." --answer "Ich spreche mit meinem Chef." --strategy "Kasusfrage" --hint "Frage dich: mit wem?"
+   python <skill-root>/scripts/deutsch_dna.py record --original 'Ich spreche mit mein Chef.' --corrected 'Ich spreche mit meinem Chef.' --category case --pattern 'mit + dative' --rule 'mit verlangt den Dativ'
+   python <skill-root>/scripts/deutsch_dna.py coach <mistake-id> --outcome assisted --prompt 'Schau noch einmal auf mit mein Chef.' --answer 'Ich spreche mit meinem Chef.' --strategy 'Kasusfrage' --hint 'Frage dich: mit wem?'
    ```
 
-4. Give one different situation that requires the same structure, without the rule or answer. Wait for their production, then use `coach --outcome independent --prompt "..." --answer "..."` if correct without help. This same-session win keeps the review schedule and accuracy unchanged. It is not evidence of long-term retention.
+4. Give one different situation that requires the same structure, without the rule or answer. Wait for their production, then use `coach --outcome independent --prompt '...' --answer '...'` if correct without help. This same-session win keeps the review schedule and accuracy unchanged. It is not evidence of long-term retention.
 5. Return to the conversation with one content-specific question. Avoid turning every message into an exercise. If they are done, stop.
 
 `--prompt` is the actual task, `--answer` is the learner's actual production, `--strategy` names the approach used, and `--hint` preserves the actual help (include every cue used in this attempt). Use German technique names and keep umlauts intact.

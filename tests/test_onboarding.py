@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 from datetime import timedelta
+from unittest import mock
 
 from test_deutsch_dna import BASE_TIME, StoreTestCase, dna
 
@@ -94,10 +95,52 @@ class OnboardingTests(StoreTestCase):
 
     def test_existing_history_is_not_forced_through_the_new_intro(self):
         self.record_example()
+        self.as_history_from_before_onboarding()
         recap = self.store.recap(at=BASE_TIME + timedelta(minutes=1))
         self.assertEqual(recap["onboarding"]["stage"], "complete")
         self.assertIsNone(recap["onboarding"]["completed_at_local"])
         self.assertTrue(recap["full_profile_due"])
+        self.record_example(original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.",
+                            at=BASE_TIME + timedelta(hours=1))
+        self.assertIsNone(self.store.recap(at=BASE_TIME + timedelta(hours=2))["onboarding"]["completed_at_local"])
+
+    def test_the_first_recorded_sentence_completes_the_introduction(self):
+        # With a self-repair, the agent records the learner's first sentence only after the attempt.
+        self.store.init_profile(explanation_language="tr", welcome_shown=True, at=BASE_TIME)
+        _, status, extra = self.record_example(at=BASE_TIME + timedelta(minutes=2))
+        self.assertEqual((status, extra["onboarding_completed"]), ("recorded", True))
+        recap = self.store.recap(at=BASE_TIME + timedelta(minutes=3))
+        self.assertEqual(recap["onboarding"]["stage"], "complete")
+        self.assertEqual(recap["onboarding"]["completed_at_local"], "2026-09-10T12:02:00+00:00")
+        self.assertFalse(recap["full_profile_due"])
+        _, _, later = self.record_example(original="Ich fahre mit mein Auto.", corrected="Ich fahre mit meinem Auto.",
+                                          at=BASE_TIME + timedelta(minutes=4))
+        self.assertNotIn("onboarding_completed", later)
+        explicit = dna.StateStore(self.home).init_profile(onboarding_complete=True, at=BASE_TIME + timedelta(minutes=5))
+        self.assertEqual(explicit["onboarding_completed_at"], dna.iso(BASE_TIME + timedelta(minutes=2)))
+
+    def test_the_record_response_says_when_it_completed_the_introduction(self):
+        def record(original, corrected):
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output):
+                code = dna.main(["--home", str(self.home), "record", "--original", original, "--corrected", corrected,
+                                 "--category", "case", "--pattern", "mit + dative", "--rule", "mit + Dativ"])
+            self.assertEqual(code, 0)
+            return json.loads(output.getvalue())
+
+        self.assertEqual(record("Ich spreche mit mein Chef.", "Ich spreche mit meinem Chef.")["onboarding"], "completed")
+        self.assertNotIn("onboarding", record("Ich fahre mit mein Auto.", "Ich fahre mit meinem Auto."))
+
+    def test_an_unwritable_state_folder_is_reported_with_a_code(self):
+        # A sandboxed agent, such as Codex in workspace-write mode, may not write to ~/.deutschdna.
+        errors = io.StringIO()
+        with mock.patch.object(dna.os, "open", side_effect=PermissionError(13, "Access is denied")), \
+                contextlib.redirect_stderr(errors):
+            code = dna.main(["--home", str(self.home / "state"), "recap"])
+        self.assertEqual(code, 2)
+        error = json.loads(errors.getvalue())
+        self.assertEqual(error["code"], "state_not_writable")
+        self.assertIn(str(self.home / "state"), error["error"])
 
     def test_first_automatic_profile_waits_for_a_week_and_further_activity(self):
         self.record_example()

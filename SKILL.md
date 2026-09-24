@@ -24,7 +24,7 @@ For voice, leave the role and give the brief evaluation through the active user-
 
 ## Language and simplicity
 
-Make the first encounter understandable before asking for German production. Use `profile.explanation_language`, or the learner's current conversation language, for onboarding and help. Their native language is a fallback, not something to guess from the language they write. If no explanation language is known, ask that one short question first; a bare skill invocation or generated launch prompt is not a language preference.
+Make the first encounter understandable and get to German quickly. Use `profile.explanation_language`, or the learner's current conversation language, for onboarding and help. Their native language is a fallback, not something to guess from the language they write. A bare skill invocation or generated launch prompt is not a language preference: when no explanation language is known, do not spend a turn asking for one. Write the short welcome in English, say they can answer in their own language, and follow the language of their reply.
 
 Practise in German, pitched to their stated level or starting point. Follow an explicit explanation-language preference even at higher levels. Otherwise, use simple German explanations from B1 upwards and a familiar support language for beginners. A starting preference such as “some German” is not a CEFR assessment. Refer to patterns by their German `label`, with a plain explanation when needed. Run the CLI yourself; keep commands, JSON, setup fields, and internal scheduling details out of the learner flow unless asked. CLI cards, when useful, are shown exactly as printed.
 
@@ -36,7 +36,11 @@ Treat the directory containing this `SKILL.md` as `<skill-root>`. Use:
 python <skill-root>/scripts/deutsch_dna.py <command>
 ```
 
-Use `python3` where `python` is missing. The CLI stores UTF-8 JSON under `DEUTSCHDNA_HOME`, defaulting to `~/.deutschdna`. Stored times are UTC; every output also carries `*_local` fields in the learner's time zone, such as `seen_at_local` and `next_review_local`. Take every time and day you mention from those fields or from the card, and never convert UTC yourself. Never edit those JSON files by hand; use `undo`, `forget`, `merge`, `rename`, `vocab-undo`, and `vocab-forget`. If Python or the script is unavailable, continue teaching but say that persistence and scheduling are unavailable.
+Start with `python`, one command per call. Only if that fails, because Python is missing or, on Windows, `python` is a Microsoft Store placeholder that prints an install hint, run the same command with `python3`, or with `py -3` on Windows. Do not check versions first. Pass every text argument in single quotes. Inside them, write an apostrophe as `''` in PowerShell or `'\''` in bash. Leave quotation marks of any kind (" „ “ ” ‘ ’) out of the text you write yourself, such as a prompt, hint, or strategy, and use a plain apostrophe instead of a curly one: Windows PowerShell and permission checks split or reject the command at them. The learner's own sentence stays verbatim. Keep ä, ö, ü, and ß; they are safe.
+
+The CLI stores UTF-8 JSON under `DEUTSCHDNA_HOME`, defaulting to `~/.deutschdna`. Stored times are UTC; every output also carries `*_local` fields in the learner's time zone, such as `seen_at_local` and `next_review_local`. Take every time and day you mention from those fields or from the card, and never convert UTC yourself. Never edit those JSON files by hand; use `undo`, `forget`, `merge`, `rename`, `vocab-undo`, and `vocab-forget`. If Python or the script is unavailable, continue teaching but say that persistence and scheduling are unavailable.
+
+If a command fails with `"code": "state_not_writable"`, the host sandbox is blocking that folder. Run the same command again with the host's approval (in Codex, request to run it outside the sandbox and say that it saves the learner's progress). If that is not possible, tell the learner once, in their language, that progress cannot be saved yet, and keep teaching; never present unsaved progress as saved.
 
 Outputs are compact for agents: patterns come without their full histories. `show <mistake-id>` returns the whole record; `--verbose` does the same on `record`, `grade`, `coach`, `due`, and the repair commands, and adds examples and coaching to the rows of `list`, `recap`, and `summary`. Use it only when you need that detail. Parallel calls are safe because the CLI locks the state directory, so several `record` calls for one sentence may run at once.
 
@@ -108,9 +112,14 @@ If the recap shows `full_profile_due`, show the full profile as **Wochenbilanz**
 
 ## First session
 
-Read [references/onboarding.md](references/onboarding.md) when `onboarding.stage` is `welcome`, `choose_start`, or `first_practice`. The flow is a short introduction in a familiar language, one easy starting question, and one small German task. Name, native language, goals, and CEFR level are optional; never require a profile form or five sentences before providing value.
+When `onboarding.stage` is `welcome`, `choose_start`, or `first_practice`, aim for this: the learner writes German in their first answer, repairs one small thing themselves, and then uses it in a new situation.
 
-Use the stored stage to resume instead of repeating the introduction. An existing German text or specific roleplay request skips the setup questions. After the learner's first actual German production, mark `init --onboarding-complete`, including when the answer is correct and there is no mistake to record. Respond to the meaning, give at most one teaching focus, and continue naturally. Show a short specific success or the first tracked pattern; keep the full profile for a progress request or later weekly review.
+1. **Welcome and first task in one message.** Two or three short lines about what this is, then one task every level can do, such as: “What did you do today? Write one sentence in German. Just starting? Complete: Ich heiße … (My name is …)”. Do not ask for their level or language first. Run `init --welcome-shown`, and add `--explanation-language` once they have used or named a language. At `choose_start` the welcome was already shown: give the task without the tour.
+2. **Their first sentence.** Respond to its meaning. If it has a confirmed error, pick one manageable root cause and give a small cue, not the answer. Run no `record` before their attempt: hosts show every command, and its `--corrected` text would give the answer away.
+3. **After the attempt,** `record` the original sentence first, then `coach` the attempt. The first `record` also completes onboarding (its response says `onboarding: completed`). A correct first sentence gets `init --onboarding-complete` and one small step up in the same situation instead, such as a time, a reason with `weil`, or the past tense.
+4. **One new situation** that needs the same structure. Log the answer with `coach --outcome independent`, show the short with-help/without-help contrast, and continue with one natural question.
+
+Read [references/onboarding.md](references/onboarding.md) for a learner who cannot write a sentence yet, a stated level, or an interrupted start, and [the learning loop](references/learning-loop.md) for the exact `coach` commands. Name, native language, goals, and CEFR level are optional; never require a profile form or five sentences before providing value. An existing German text or specific roleplay request skips the introduction. Keep the full profile for a progress request or a later weekly review.
 
 ## Choose the mode
 
@@ -126,21 +135,21 @@ Use the stored stage to resume instead of repeating the introduction. An existin
 
 Read [references/correction-protocol.md](references/correction-protocol.md) before the first correction in a conversation. Read [references/patterns.md](references/patterns.md) when naming a pattern and [references/error-taxonomy.md](references/error-taxonomy.md) when choosing a category.
 
-In free conversation, react to the meaning of their message first and continue with one relevant question after feedback. Use a brief self-repair invitation when practice is wanted; read [the learning loop](references/learning-loop.md). Respect requests for direct correction, a finished document, or no follow-up exercise. Roleplay keeps its delayed feedback policy.
+In free conversation, react to the meaning of their message first and continue with one relevant question after feedback. Use a brief self-repair invitation when practice is wanted; read [the learning loop](references/learning-loop.md). In a self-repair, record the error after the learner's attempt, not before the cue: commands are visible, and `--corrected` would give the answer away. Respect requests for direct correction, a finished document, or no follow-up exercise. Roleplay keeps its delayed feedback policy.
 
 1. Preserve meaning, tone, vocabulary, clause order, and sentence structure unless grammar requires a change.
 2. Correct genuine grammar, spelling, agreement, government, or clearly wrong word choice. Do not silently optimize style.
 3. Produce the smallest grammatical correction. Put any more idiomatic formulation under **Native alternative**, explicitly saying it is not the correction.
-4. Record each real learner error by root cause. Before the first correction in a conversation, run `list --status active`; if the error matches a listed pattern, record by ID:
+4. Record each real learner error by root cause. Before the first correction in a conversation, run `list --status active`, unless `recap` showed no tracked patterns; if the error matches a listed pattern, record by ID:
 
    ```text
-   python <skill-root>/scripts/deutsch_dna.py record --mistake-id m_... --original "..." --corrected "..."
+   python <skill-root>/scripts/deutsch_dna.py record --mistake-id m_... --original '...' --corrected '...'
    ```
 
    Otherwise name it with a catalog key from `references/patterns.md`:
 
    ```text
-   python <skill-root>/scripts/deutsch_dna.py record --original "..." --corrected "..." --category case --pattern "mit + dative" --rule "mit always governs the dative"
+   python <skill-root>/scripts/deutsch_dna.py record --original '...' --corrected '...' --category case --pattern 'mit + dative' --rule 'mit always governs the dative'
    ```
 
    Pass the whole sentence the learner wrote, verbatim, as `--original`, and the complete minimal correction of that sentence as `--corrected`, even when one sentence contains several patterns; record it once per pattern. Never shorten, paraphrase, or pass a fragment. Write German exactly as it is spelled: the CLI is UTF-8 safe on every platform, so never replace ä, ö, ü, or ß with ae, oe, ue, or ss.
@@ -152,7 +161,7 @@ In free conversation, react to the meaning of their message first and continue w
 7. When the learner correctly and unprompted uses a pattern that is active in `list`, log it once per message:
 
    ```text
-   python <skill-root>/scripts/deutsch_dna.py observe m_... --context "the learner's phrase"
+   python <skill-root>/scripts/deutsch_dna.py observe m_... --context '<their exact sentence>'
    ```
 
    Then show their last wrong sentence (`last_mistake` in the response) next to today's correct one, with how long ago it was. Log only clear, specific productions of that pattern, never generic correct German. For broad patterns that almost every sentence exercises, such as capitalization, log a correct use only in the kind of situation where the learner used to fail.
@@ -176,9 +185,9 @@ For each returned mistake:
 3. Grade only after the learner answers, and always pass their answer so it enters the pattern's timeline:
 
    ```text
-   python <skill-root>/scripts/deutsch_dna.py grade <mistake-id> --result pass --prompt "..." --answer "..."
-   python <skill-root>/scripts/deutsch_dna.py grade <mistake-id> --result hard --prompt "..." --answer "..." --strategy "..." --hint "..."
-   python <skill-root>/scripts/deutsch_dna.py grade <mistake-id> --result fail --prompt "..." --answer "..." --correction "..."
+   python <skill-root>/scripts/deutsch_dna.py grade <mistake-id> --result pass --prompt '...' --answer '...'
+   python <skill-root>/scripts/deutsch_dna.py grade <mistake-id> --result hard --prompt '...' --answer '...' --strategy '...' --hint '...'
+   python <skill-root>/scripts/deutsch_dna.py grade <mistake-id> --result fail --prompt '...' --answer '...' --correction '...'
    ```
 
 4. Use `pass` only for a new answer without a hint, `hard` when correct after hesitation or a small hint, and `fail` when the same error recurs. Omit `--strategy` and `--hint` when none was given; otherwise preserve both the actual method and exact hint. A supplied answer copied by the learner belongs to `coach --outcome shown`, not a pass. No learner answer means no grading. A `fail` already counts as a recurrence; do not also `record` it. Subsequent repair is a separate `coach` attempt.
@@ -197,7 +206,7 @@ python <skill-root>/scripts/deutsch_dna.py vocab-due --limit 5
 For each word, give its `meaning` in the explanation language and one new everyday situation, and ask for one German sentence that uses the word. Do not show the German word, the scene sentence in `source.example`, or a situation from `recent_prompts`. Grade after the answer:
 
 ```text
-python <skill-root>/scripts/deutsch_dna.py vocab-grade <word-id> --result pass --prompt "..." --answer "..."
+python <skill-root>/scripts/deutsch_dna.py vocab-grade <word-id> --result pass --prompt '...' --answer '...'
 ```
 
 `pass` means the right word in a fitting form without help, `hard` means correct after hesitation or a small cue, and `fail` means a wrong or missing word; add `--correction "..."` to a fail. Other mistakes in the sentence go through the usual correction flow. The CLI rejects words that are not due, reused prompts, and a pass with a sentence it has already seen. Review due patterns first and then up to five words, unless the learner asks for words. When the returned word is `mastered`, congratulate in one line.

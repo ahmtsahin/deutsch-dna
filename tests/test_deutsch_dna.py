@@ -42,6 +42,13 @@ class StoreTestCase(unittest.TestCase):
         self._temporary.cleanup()
         self._environment.stop()
 
+    def as_history_from_before_onboarding(self):
+        """Profiles written before onboarding existed have history but no onboarding markers."""
+        path = self.home / "profile.json"
+        profile = json.loads(path.read_text(encoding="utf-8"))
+        profile.pop("onboarding_completed_at", None)
+        path.write_text(json.dumps(profile), encoding="utf-8")
+
     def record_example(self, at=BASE_TIME, event_id=None, **overrides):
         params = dict(
             original="Ich spreche mit mein Chef.",
@@ -953,6 +960,7 @@ class LocalTimeAndCardTests(StoreTestCase):
 
     def test_full_profile_is_due_weekly_after_new_activity(self):
         self.record_example()
+        self.as_history_from_before_onboarding()
         self.assertTrue(self.store.recap(at=BASE_TIME + timedelta(hours=1))["full_profile_due"])
         self.print_cli("summary", "--format", "text", "--at", "2026-09-10T13:00:00Z")
         self.assertFalse(self.store.recap(at=BASE_TIME + timedelta(hours=2))["full_profile_due"])

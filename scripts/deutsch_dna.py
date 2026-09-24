@@ -157,7 +157,22 @@ SCENARIOS: dict[str, dict[str, Any]] = {
 
 
 class DeutschDNAError(Exception):
-    """A user-facing CLI error."""
+    """A user-facing CLI error; `code` names the errors an agent handles in its own way."""
+
+    def __init__(self, message: str, *, code: str | None = None):
+        super().__init__(message)
+        self.code = code
+
+
+STATE_NOT_WRITABLE = "state_not_writable"
+
+
+def _state_not_writable(home: Path, exc: OSError) -> DeutschDNAError:
+    return DeutschDNAError(
+        f"Cannot write the learner's progress in {home}: {exc}. An agent sandbox may be blocking this folder; "
+        "run the command again with the learner's approval, or allow the folder once as the README describes.",
+        code=STATE_NOT_WRITABLE,
+    )
 
 
 # --------------------------------------------------------------------------- time
@@ -956,7 +971,7 @@ def state_lock(home: Path, *, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator
         home.mkdir(parents=True, exist_ok=True)
         descriptor = os.open(home / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
     except OSError as exc:
-        raise DeutschDNAError(f"Could not open the state lock in {home}: {exc}") from exc
+        raise _state_not_writable(home, exc) from exc
     deadline = time.monotonic() + timeout
     locked = False
     try:
@@ -1058,7 +1073,7 @@ class StateStore:
         try:
             self.home.mkdir(parents=True, exist_ok=True)
         except OSError as exc:
-            raise DeutschDNAError(f"Could not create the state directory {self.home}: {exc}") from exc
+            raise _state_not_writable(self.home, exc) from exc
         if not self.profile_path.exists():
             _atomic_write(
                 self.profile_path,
@@ -1333,6 +1348,7 @@ class StateStore:
             moment = parse_moment(turn["at"])
         document = self._mistake_document()
         mistakes = document["mistakes"]
+        first_production = not mistakes
         resolved_by: str | None = None
 
         if mistake_id:
@@ -1454,7 +1470,19 @@ class StateStore:
         _atomic_write(self.mistakes_path, document)
         if session_id:
             self._session_feedback(session_id, mistake, example)
+        if first_production:
+            extra["onboarding_completed"] = self._complete_onboarding(moment)
         return mistake, status, extra
+
+    def _complete_onboarding(self, moment: datetime) -> bool:
+        """A new learner's first recorded sentence is their first practice, as `init --onboarding-complete` records it."""
+        profile = self._profile()
+        if profile.get("onboarding_completed_at"):
+            return False
+        profile["onboarding_completed_at"] = iso(moment)
+        profile["updated_at"] = iso(moment)
+        _atomic_write(self.profile_path, profile)
+        return True
 
     def observe(
         self,
@@ -3262,6 +3290,8 @@ def _run_locked(store: StateStore, arguments: argparse.Namespace) -> dict[str, A
         }
         if extra.get("previous"):
             result["previous"] = extra["previous"]
+        if extra.get("onboarding_completed"):
+            result["onboarding"] = "completed"
         similar = extra.get("similar_patterns") or []
         if similar:
             result["similar_patterns"] = similar
@@ -3400,7 +3430,7 @@ def main(argv: list[str] | None = None) -> int:
             _print_json(result)
         return 0
     except DeutschDNAError as exc:
-        _print_json({"error": str(exc)}, stream=sys.stderr)
+        _print_json({"error": str(exc), **({"code": exc.code} if exc.code else {})}, stream=sys.stderr)
         return 2
 
 

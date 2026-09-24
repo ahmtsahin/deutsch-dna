@@ -20,21 +20,14 @@ import deutsch_dna as dna  # noqa: E402
 
 
 BASE_TIME = datetime(2026, 9, 10, 12, 0, tzinfo=timezone.utc)
-LOCAL_ENDPOINT = "http://localhost:8081/v2/check"
-
-
-class FakeResponse:
-    def __init__(self, value: dict):
-        self.value = value
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc, traceback):
-        return False
-
-    def read(self):
-        return json.dumps(self.value).encode("utf-8")
+CASE_REVIEWS = [
+    ("Dein Verkehrsmittel ist der Bus. Wie kommst du zur Arbeit?", "Ich fahre mit dem Bus."),
+    ("Deine Mutter ruft an. Mit wem telefonierst du?", "Ich telefoniere mit meiner Mutter."),
+    ("Die Nachbarn kommen zum Abendessen. Mit wem esst ihr?", "Wir essen mit unseren Nachbarn."),
+    ("Ein Kunde besucht dich. Mit wem sprichst du?", "Ich spreche mit einem Kunden."),
+    ("Dein Bruder begleitet dich auf der Reise. Mit wem reist du?", "Ich reise mit meinem Bruder."),
+    ("Deine Schwester und du teilen eine Wohnung. Mit wem wohnst du?", "Ich wohne mit meiner Schwester."),
+]
 
 
 class StoreTestCase(unittest.TestCase):
@@ -56,12 +49,19 @@ class StoreTestCase(unittest.TestCase):
             category="case",
             pattern="mit + dative",
             rule="mit always governs dative",
-            verification_status="verified",
             at=at,
             event_id=event_id,
         )
         params.update(overrides)
         return self.store.record(**params)
+
+    def grade_example(self, identifier, *, result, at, **overrides):
+        prompts = {"pass": CASE_REVIEWS[0][0], "hard": CASE_REVIEWS[5][0],
+                   "fail": "Dein Freund begleitet dich. Mit wem fährst du?"}
+        answers = {"pass": CASE_REVIEWS[0][1], "hard": CASE_REVIEWS[5][1], "fail": "Ich fahre mit mein Freund."}
+        params = {"result": result, "at": at, "prompt": prompts[result], "answer": answers[result]}
+        params.update(overrides)
+        return self.store.grade(identifier, **params)
 
 
 class ProfileAndRecordingTests(StoreTestCase):
@@ -150,21 +150,44 @@ class ProfileAndRecordingTests(StoreTestCase):
 
     def test_new_pattern_reports_similar_existing_patterns(self):
         first, _, _ = self.record_example(
-            category="agreement",
-            pattern="adjective ending after der-word",
-            original="den neue Film",
-            corrected="den neuen Film",
+            category="article",
+            pattern="Reservierung is feminine",
+            original="ein Reservierung",
+            corrected="eine Reservierung",
         )
         second, status, extra = self.record_example(
-            category="agreement",
-            pattern="adjective ending after ein-word",
-            original="einen neue Job",
-            corrected="einen neuen Job",
+            category="article",
+            pattern="Reservirung is feminine",
+            original="der Reservierung",
+            corrected="die Reservierung",
             at=BASE_TIME + timedelta(hours=1),
         )
         self.assertEqual(status, "recorded")
         self.assertNotEqual(first["id"], second["id"])
         self.assertEqual(extra["similar_patterns"][0]["id"], first["id"])
+
+    def test_same_template_with_another_word_is_not_a_merge_candidate(self):
+        pairs = [
+            ("mit + dative", "bei + dative"),
+            ("warten auf + accusative", "achten auf + accusative"),
+            ("Pizza is feminine", "Suppe is feminine"),
+            ("weil sends finite verb to end", "dass sends finite verb to end"),
+            ("adjective ending after der-word", "adjective ending after ein-word"),
+            ("Tisch is masculine", "Fisch is masculine"),
+        ]
+        for existing, new in pairs:
+            with self.subTest(existing=existing, new=new):
+                rows = [{"id": "m_x", "pattern": existing, "category": "case", "pattern_key": dna.pattern_key(existing)}]
+                self.assertEqual(dna.similar_patterns(rows, dna.pattern_key(new)), [])
+        respelled = [
+            ("sich freuen auf + accusative", "freuen auf + accusative"),
+            ("für + accusative", "fuer + accusative"),
+            ("dass vs das", "daß vs das"),
+        ]
+        for existing, new in respelled:
+            with self.subTest(existing=existing, new=new):
+                rows = [{"id": "m_x", "pattern": existing, "category": "case", "pattern_key": dna.pattern_key(existing)}]
+                self.assertEqual(dna.similar_patterns(rows, dna.pattern_key(new))[0]["id"], "m_x")
 
     def test_pattern_key_normalization(self):
         self.assertEqual(dna.pattern_key("mit + Dativ"), "mit + dative")
@@ -182,7 +205,7 @@ class ReviewTests(StoreTestCase):
         mistake, _, _ = self.record_example()
         self.assertEqual(self.store.due(at=BASE_TIME + timedelta(hours=23)), [])
         self.assertEqual(len(self.store.due(at=BASE_TIME + timedelta(days=1))), 1)
-        graded, status = self.store.grade(mistake["id"], result="pass", at=BASE_TIME + timedelta(days=1))
+        graded, status = self.grade_example(mistake["id"], result="pass", at=BASE_TIME + timedelta(days=1))
         self.assertEqual(status, "graded")
         self.assertEqual(graded["review_step"], 1)
         self.assertEqual(graded["next_review"], dna.iso(BASE_TIME + timedelta(days=4)))
@@ -190,7 +213,7 @@ class ReviewTests(StoreTestCase):
 
     def test_fail_records_recurrence_and_restarts_review(self):
         mistake, _, _ = self.record_example()
-        failed, _ = self.store.grade(
+        failed, _ = self.grade_example(
             mistake["id"],
             result="fail",
             answer="mit mein Freund",
@@ -203,17 +226,17 @@ class ReviewTests(StoreTestCase):
         self.assertEqual(failed["next_review"], dna.iso(BASE_TIME + timedelta(days=2)))
         self.assertEqual(failed["examples"][-1]["original"], "mit mein Freund")
 
-    def test_fail_without_answer_still_logs_an_example(self):
+    def test_fail_without_answer_is_rejected_without_inventing_an_example(self):
         mistake, _, _ = self.record_example()
-        failed, _ = self.store.grade(mistake["id"], result="fail", at=BASE_TIME + timedelta(days=1))
-        self.assertEqual(len(failed["examples"]), 2)
-        self.assertIsNone(failed["examples"][-1]["original"])
+        with self.assertRaises(dna.DeutschDNAError):
+            self.store.grade(mistake["id"], result="fail", prompt=CASE_REVIEWS[0][0], at=BASE_TIME + timedelta(days=1))
+        self.assertEqual(self.store.show(mistake["id"]), mistake)
 
     def test_duplicate_grade_within_window_is_ignored(self):
         mistake, _, _ = self.record_example()
         review_time = BASE_TIME + timedelta(days=1)
-        self.store.grade(mistake["id"], result="fail", at=review_time)
-        repeated, status = self.store.grade(mistake["id"], result="fail", at=review_time + timedelta(minutes=1))
+        self.grade_example(mistake["id"], result="fail", at=review_time)
+        repeated, status = self.grade_example(mistake["id"], result="fail", at=review_time + timedelta(minutes=1))
         self.assertEqual(status, "duplicate")
         self.assertEqual(repeated["occurrences"], 2)
         self.assertEqual(repeated["review_attempts"], 1)
@@ -222,7 +245,8 @@ class ReviewTests(StoreTestCase):
         mistake, _, _ = self.record_example()
         review_time = BASE_TIME + timedelta(days=1)
         for step in range(len(dna.REVIEW_INTERVALS)):
-            mistake, _ = self.store.grade(mistake["id"], result="pass", at=review_time)
+            prompt, answer = CASE_REVIEWS[step]
+            mistake, _ = self.grade_example(mistake["id"], result="pass", prompt=prompt, answer=answer, at=review_time)
             if step + 1 < len(dna.REVIEW_INTERVALS):
                 review_time = dna.parse_moment(mistake["next_review"])
         self.assertEqual(mistake["status"], "mastered")
@@ -373,7 +397,8 @@ class ReportingTests(StoreTestCase):
         self.assertEqual(summary["profile"]["name"], "Ahmet")
         self.assertEqual(summary["due_now"], 1)
 
-        self.store.grade(first["id"], result="pass", at=BASE_TIME + timedelta(days=1, hours=2))
+        self.grade_example(first["id"], result="pass", prompt="Dein Bruder kommt später. Auf wen wartest du?",
+                           answer="Ich warte auf meinen Bruder.", at=BASE_TIME + timedelta(days=1, hours=2))
         summary = self.store.summary(at=BASE_TIME + timedelta(days=1, hours=3))
         self.assertEqual(summary["categories"]["preposition"]["correct"], 1)
         self.assertEqual(summary["categories"]["preposition"]["accuracy_percent"], 33)
@@ -383,7 +408,7 @@ class ReportingTests(StoreTestCase):
 
     def test_recap_counts_window_events(self):
         mistake, _, _ = self.record_example(at=BASE_TIME - timedelta(days=20))
-        self.store.grade(mistake["id"], result="pass", at=BASE_TIME - timedelta(days=19))
+        self.grade_example(mistake["id"], result="pass", at=BASE_TIME - timedelta(days=19))
         self.record_example(at=BASE_TIME - timedelta(days=2), event_id="recurrence")
         self.record_example(
             category="preposition",
@@ -392,7 +417,7 @@ class ReportingTests(StoreTestCase):
             corrected="Ich warte auf dich.",
             at=BASE_TIME - timedelta(days=1),
         )
-        self.store.grade(mistake["id"], result="fail", answer="mit mein Chef", correction="mit meinem Chef", at=BASE_TIME - timedelta(hours=12))
+        self.grade_example(mistake["id"], result="fail", answer="mit mein Chef", correction="mit meinem Chef", at=BASE_TIME - timedelta(hours=12))
         self.store.observe([mistake["id"]], context="mit meinem Team", at=BASE_TIME - timedelta(hours=6))
         started = self.store.roleplay_start("restaurant", at=BASE_TIME - timedelta(hours=3))
         self.store.roleplay_finish(started["session"]["id"], turns=8, at=BASE_TIME - timedelta(hours=2, minutes=54))
@@ -435,77 +460,6 @@ class CorrectionTests(unittest.TestCase):
     def test_rewrite_is_flagged(self):
         result = dna.analyze_correction("Ich bin müde.", "Erschöpft sank ich sofort ins Bett.")
         self.assertEqual(result["minimality_status"], "possible_rewrite")
-
-    def test_language_tool_can_verify_correction(self):
-        responses = [
-            FakeResponse(
-                {
-                    "matches": [
-                        {
-                            "message": "Kasus",
-                            "offset": 17,
-                            "length": 4,
-                            "rule": {"id": "GERMAN_CASE"},
-                            "replacements": [{"value": "meinem"}],
-                        }
-                    ]
-                }
-            ),
-            FakeResponse({"matches": []}),
-        ]
-        with mock.patch("urllib.request.urlopen", side_effect=responses):
-            result = dna.verify_correction(
-                "Ich spreche mit mein Chef.",
-                "Ich spreche mit meinem Chef.",
-                endpoint=LOCAL_ENDPOINT,
-            )
-        self.assertEqual(result["validator_status"], "verified")
-        self.assertEqual(result["resolved_rule_ids"], ["GERMAN_CASE"])
-        self.assertTrue(result["replacement_supported"])
-
-    def test_unrelated_language_tool_finding_does_not_verify_the_edit(self):
-        responses = [
-            FakeResponse(
-                {
-                    "matches": [
-                        {
-                            "message": "Unrelated",
-                            "offset": 0,
-                            "length": 3,
-                            "rule": {"id": "UNRELATED_RULE"},
-                            "replacements": [{"value": "Something else"}],
-                        }
-                    ]
-                }
-            ),
-            FakeResponse({"matches": []}),
-        ]
-        with mock.patch("urllib.request.urlopen", side_effect=responses):
-            result = dna.verify_correction(
-                "Ich spreche mit mein Chef.",
-                "Ich spreche mit meinem Chef.",
-                endpoint=LOCAL_ENDPOINT,
-            )
-        self.assertEqual(result["validator_status"], "supported")
-        self.assertFalse(result["replacement_supported"])
-
-    def test_unreachable_language_tool_degrades_cleanly(self):
-        with mock.patch("urllib.request.urlopen", side_effect=dna.urllib.error.URLError("offline")):
-            result = dna.verify_correction("Das ist gut.", "Das ist gut.", endpoint="http://127.0.0.1:8081/v2/check")
-        self.assertEqual(result["validator_status"], "unavailable")
-        self.assertIn("analysis", result)
-
-    def test_remote_endpoint_is_blocked_unless_allowed(self):
-        with mock.patch("urllib.request.urlopen") as urlopen:
-            result = dna.verify_correction("Das ist gut.", "Das ist gut.", endpoint="https://api.languagetool.org/v2/check")
-            urlopen.assert_not_called()
-        self.assertEqual(result["validator_status"], "unavailable")
-        self.assertIn("--allow-remote", result["reason"])
-        with mock.patch("urllib.request.urlopen", side_effect=[FakeResponse({"matches": []}), FakeResponse({"matches": []})]):
-            allowed = dna.verify_correction(
-                "Das ist gut.", "Das ist gut.", endpoint="https://api.languagetool.org/v2/check", allow_remote=True
-            )
-        self.assertEqual(allowed["validator_status"], "no_finding")
 
 
 class CliTests(unittest.TestCase):
@@ -586,7 +540,7 @@ class CliTests(unittest.TestCase):
         self.assertNotIn("%", summary)
         recap = self.run_cli("recap", "--format", "text", "--at", "2026-09-02T09:00:00Z")
         self.assertIn("Willkommen zurück, Ahmet.", recap)
-        self.assertIn("1 mistake due for review", recap)
+        self.assertIn("1 Fehler zum Wiederholen fällig", recap)
         due = self.run_cli("due", "--format", "text", "--at", "2026-09-02T09:00:00Z")
         self.assertIn(mistake_id, due)
         self.assertIn("→", due)
@@ -594,7 +548,8 @@ class CliTests(unittest.TestCase):
         self.assertIn("mit + dative", listing)
         empty = self.run_cli("list", "--status", "mastered", "--format", "text")
         self.assertEqual(empty.strip(), "No patterns match.")
-        graded = json.loads(self.run_cli("grade", mistake_id, "--result", "pass", "--at", "2026-09-02T10:00:00Z"))
+        graded = json.loads(self.run_cli("grade", mistake_id, "--result", "pass", "--prompt", CASE_REVIEWS[0][0],
+                                        "--answer", CASE_REVIEWS[0][1], "--at", "2026-09-02T10:00:00Z"))
         self.assertEqual(graded["mistake"]["review_step"], 1)
         reviewed = self.run_cli("summary", "--format", "text", "--at", "2026-09-02T11:00:00Z")
         self.assertIn("░", reviewed)
@@ -602,11 +557,11 @@ class CliTests(unittest.TestCase):
         renamed = json.loads(self.run_cli("rename", mistake_id, "--rule", "mit governs the dative"))
         self.assertEqual(renamed["mistake"]["rule"], "mit governs the dative")
         timeline = self.run_cli("show", graded["mistake"]["id"], "--format", "text")
-        self.assertIn("✗ wrote    Ich spreche mit mein Chef. → Ich spreche mit meinem Chef.", timeline)
+        self.assertIn("✗ Fehler         Ich spreche mit mein Chef. → Ich spreche mit meinem Chef.", timeline)
         forgotten = json.loads(self.run_cli("forget", mistake_id))
         self.assertEqual(forgotten["status"], "forgotten")
         empty_summary = self.run_cli("summary", "--format", "text")
-        self.assertIn("No mistakes recorded yet", empty_summary)
+        self.assertIn("Noch keine Fehler gespeichert", empty_summary)
 
     def test_roleplay_finish_accepts_plural_and_repeated_mistake_flags(self):
         started = json.loads(self.run_cli("roleplay-start", "--scenario", "wohnung"))
@@ -627,9 +582,10 @@ class CliTests(unittest.TestCase):
 class TimelineAndMigrationTests(StoreTestCase):
     def test_grade_answers_are_kept_and_rendered_in_the_timeline(self):
         mistake, _, _ = self.record_example()
-        self.store.grade(mistake["id"], result="pass", answer="Ich fahre mit dem Bus.", at=BASE_TIME + timedelta(days=1))
-        self.store.grade(mistake["id"], result="hard", answer="Ich wohne mit meiner Schwester.", at=BASE_TIME + timedelta(days=4))
-        self.store.grade(
+        self.grade_example(mistake["id"], result="pass", answer="Ich fahre mit dem Bus.", at=BASE_TIME + timedelta(days=1))
+        self.grade_example(mistake["id"], result="hard", answer="Ich wohne mit meiner Schwester.",
+                           strategy="Kasusfrage", hint="Mit wem?", at=BASE_TIME + timedelta(days=4))
+        self.grade_example(
             mistake["id"],
             result="fail",
             answer="mit mein Freund",
@@ -640,31 +596,32 @@ class TimelineAndMigrationTests(StoreTestCase):
         stored = self.store.show(mistake["id"])
         self.assertEqual(stored["review_history"][0]["answer"], "Ich fahre mit dem Bus.")
         text = dna.render_show_text({"mistake": stored})
-        self.assertIn("✗ wrote    Ich spreche mit mein Chef. → Ich spreche mit meinem Chef.", text)
-        self.assertIn("✓ review   Ich fahre mit dem Bus.", text)
-        self.assertIn("~ review   Ich wohne mit meiner Schwester. (after a hint)", text)
-        self.assertIn("✗ review   mit mein Freund → mit meinem Freund", text)
-        self.assertIn("✓ used     mit unseren Kunden", text)
-        self.assertEqual(text.count("✗ review"), 1)
-        self.assertIn("step 0/6", text)
+        self.assertIn("✗ Fehler         Ich spreche mit mein Chef. → Ich spreche mit meinem Chef.", text)
+        self.assertIn("✓ Wiederholung   Ich fahre mit dem Bus.", text)
+        self.assertIn("~ Wiederholung   Ich wohne mit meiner Schwester. (nach einem Hinweis)", text)
+        self.assertIn("✗ Wiederholung   mit mein Freund → mit meinem Freund", text)
+        self.assertIn("✓ frei benutzt   mit unseren Kunden", text)
+        self.assertEqual(text.count("✗ Wiederholung"), 1)
+        self.assertIn("Stufe 0/6", text)
+        self.assertNotIn("Rule", text)
 
     def test_timeline_shows_mastery_and_the_comeback(self):
         mistake, _, _ = self.record_example()
         review_time = BASE_TIME + timedelta(days=1)
-        for _ in dna.REVIEW_INTERVALS:
-            mistake, _ = self.store.grade(mistake["id"], result="pass", at=review_time)
+        for prompt, answer in CASE_REVIEWS:
+            mistake, _ = self.grade_example(mistake["id"], result="pass", prompt=prompt, answer=answer, at=review_time)
             if mistake["next_review"]:
                 review_time = dna.parse_moment(mistake["next_review"])
         mastered_text = dna.render_show_text({"mistake": mistake})
-        self.assertIn("· mastered\n", mastered_text.splitlines()[0] + "\n")
+        self.assertIn("· gemeistert\n", mastered_text.splitlines()[0] + "\n")
         comeback = review_time + timedelta(days=3)
         self.record_example(original="Ich gehe mit mein Hund.", corrected="Ich gehe mit meinem Hund.", at=comeback)
         stored = self.store.show(mistake["id"])
         self.assertEqual(stored["previously_mastered_at"], dna.iso(review_time))
         text = dna.render_show_text({"mistake": stored})
-        self.assertIn("★ mastered", text)
-        self.assertIn("↺ came back after mastery", text)
-        self.assertLess(text.index("★ mastered"), text.index("↺ came back after mastery"))
+        self.assertIn("★ gemeistert", text)
+        self.assertIn("↺ nach dem Meistern zurück", text)
+        self.assertLess(text.index("★ gemeistert"), text.index("↺ nach dem Meistern zurück"))
 
     def test_schema_one_state_is_migrated_and_resolves_by_pattern_key(self):
         legacy_id = "m_legacy000001"
@@ -747,9 +704,9 @@ class TimelineAndMigrationTests(StoreTestCase):
         self.assertEqual(summary["clusters"][1]["recent_patterns"], 1)
         text = dna.render_summary_text(summary)
         self.assertEqual(summary["recent_errors_total"], 7)
-        self.assertIn("Root cause: Präpositionen · 3 of your 7 mistakes in 30 days · 3 related patterns", text)
+        self.assertIn("Ursache: Präpositionen · 3 von 7 Fehlern der letzten 30 Tage · 3 verwandte Muster", text)
         self.assertIn("  → warten auf + Akkusativ", text)
-        self.assertIn("Also: Endungen · 4 of your 7 mistakes in 30 days · 1 related pattern", text)
+        self.assertIn("Außerdem: Endungen · 4 von 7 Fehlern der letzten 30 Tage · 1 verwandtes Muster", text)
 
     def test_demo_story_replays_through_the_engine(self):
         sys.path.insert(0, str(SCRIPT.parent))
@@ -793,8 +750,8 @@ class UndoTests(StoreTestCase):
 
     def test_undo_restores_the_schedule_after_a_disputed_failed_review(self):
         mistake, _, _ = self.record_example()
-        passed, _ = self.store.grade(mistake["id"], result="pass", answer="Ich fahre mit dem Bus.", at=BASE_TIME + timedelta(days=1))
-        failed, _ = self.store.grade(
+        passed, _ = self.grade_example(mistake["id"], result="pass", answer="Ich fahre mit dem Bus.", at=BASE_TIME + timedelta(days=1))
+        failed, _ = self.grade_example(
             mistake["id"], result="fail", answer="mit mein Freund", correction="mit meinem Freund", at=BASE_TIME + timedelta(days=4)
         )
         self.assertEqual(failed["review_step"], 0)
@@ -855,10 +812,10 @@ class CallbackDataTests(StoreTestCase):
         self.assertFalse(any(bucket["weak"] for bucket in summary["categories"].values()))
         text = dna.render_summary_text(summary)
         self.assertNotIn("%", text)
-        self.assertNotIn("weak", text)
-        self.assertNotIn("Weakest patterns", text)
+        self.assertNotIn("schwach", text)
+        self.assertNotIn("Schwächste Muster", text)
         self.assertIn("Wortstellung    neu", text)
-        self.assertIn("Root cause: Wortstellung · 3 of your 4 mistakes in 30 days · 2 related patterns", text)
+        self.assertIn("Ursache: Wortstellung · 3 von 4 Fehlern der letzten 30 Tage · 2 verwandte Muster", text)
 
     def test_recurrence_returns_the_first_and_last_wrong_sentence(self):
         self.record_example(original="Ich spreche mit mein Chef.", corrected="Ich spreche mit meinem Chef.")
@@ -884,7 +841,7 @@ class CallbackDataTests(StoreTestCase):
     def test_timeline_footer_marks_an_unreviewed_pattern_as_new(self):
         mistake, _, _ = self.record_example()
         text = dna.render_show_text({"mistake": self.store.show(mistake["id"])})
-        self.assertIn("neu · 1 wrong · 0 right · step 0/6", text)
+        self.assertIn("neu · 1× falsch · 0× richtig · Stufe 0/6", text)
         self.assertNotIn("%", text)
 
 
@@ -904,7 +861,7 @@ class LocalTimeAndCardTests(StoreTestCase):
     def test_outputs_carry_local_times_next_to_utc(self):
         self.use_offset("+02:00")
         mistake, _, _ = self.record_example()
-        row = self.store.list()[0]
+        row = self.store.list(verbose=True)[0]
         self.assertEqual(row["next_review"], "2026-09-11T12:00:00Z")
         self.assertEqual(row["next_review_local"], "2026-09-11T14:00:00+02:00")
         self.assertEqual(row["last_example"]["seen_at_local"], "2026-09-10T14:00:00+02:00")
@@ -963,7 +920,7 @@ class LocalTimeAndCardTests(StoreTestCase):
     def test_board_for_a_learner_who_paused(self):
         self.use_offset("+02:00")
         mistake, _, _ = self.record_example()
-        self.store.grade(mistake["id"], result="pass", at=BASE_TIME + timedelta(days=1))
+        self.grade_example(mistake["id"], result="pass", at=BASE_TIME + timedelta(days=1))
         later = self.store.recap(at=BASE_TIME + timedelta(days=1, hours=6))
         row = later["card"].splitlines()[2]
         self.assertIn("▰▱▱▱▱▱ 1/6", row)
@@ -990,7 +947,7 @@ class LocalTimeAndCardTests(StoreTestCase):
         recap = self.store.recap(at=BASE_TIME)
         self.assertEqual(
             recap["card"],
-            "DeutschDNA · Learner\nNoch keine Einträge. Schreib ein paar Sätze auf Deutsch, dann entsteht deine DNA.",
+            "DeutschDNA\nNoch keine Einträge. Schreib ein paar Sätze auf Deutsch, dann entsteht deine DNA.",
         )
         self.assertFalse(recap["full_profile_due"])
 
@@ -1058,10 +1015,10 @@ class LabelTests(StoreTestCase):
             corrected="weil ich krank bin",
         )
         timeline = dna.render_show_text({"mistake": dna.public(self.store.show(mistake["id"]))})
-        self.assertTrue(timeline.startswith("weil: Verb ans Ende · Wortstellung · learning"))
+        self.assertTrue(timeline.startswith("weil: Verb ans Ende · Wortstellung · wird geübt"))
         due = self.store.due(at=BASE_TIME + timedelta(days=2))
         text = dna.render_due_text({"count": len(due), "mistakes": [dna.public(item) for item in due]})
-        self.assertIn("1. weil: Verb ans Ende  [word-order]", text)
+        self.assertIn("1. weil: Verb ans Ende  [Wortstellung]", text)
 
 
 if __name__ == "__main__":

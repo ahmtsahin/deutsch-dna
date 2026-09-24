@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""DeutschDNA's dependency-free local mistake memory and review engine.
+"""DeutschDNA's dependency-free local mistake memory, word deck, and review engine.
 
-All learner state is plain JSON under one directory. Nothing leaves the machine
-unless a remote validator endpoint is explicitly allowed.
+All learner state is plain JSON under one directory, and nothing leaves the machine.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import copy
 import difflib
 import hashlib
@@ -15,17 +15,21 @@ import json
 import os
 import re
 import sys
+import time
 import unicodedata
-import urllib.error
-import urllib.parse
-import urllib.request
 import uuid
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Iterator
+
+try:
+    import fcntl
+except ImportError:  # Windows
+    fcntl = None
+    import msvcrt
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 REVIEW_INTERVALS = (1, 3, 7, 14, 30, 60)
 RECENT_DAYS = 7
 EXAMPLE_LIMIT = 12
@@ -33,19 +37,33 @@ HISTORY_LIMIT = 30
 DUPLICATE_RECORD_WINDOW = timedelta(minutes=30)
 DUPLICATE_EVENT_WINDOW = timedelta(minutes=5)
 SIMILARITY_HINT_THRESHOLD = 0.72
+# Two keys in the same template (`mit + dative`, `bei + dative`, `Tisch`/`Fisch is masculine`)
+# name different patterns; only a near-identical spelling of the differing word suggests one
+# root cause. Umlauts and ß are compared as ae/oe/ue/ss, since agents sometimes write them so.
+SPELLING_VARIANT_THRESHOLD = 0.85
+# A review or unaided answer sharing this share of its words with an earlier one reuses its frame.
+VARIETY_WARNING_THRESHOLD = 0.6
+VARIETY_MIN_WORDS = 4
+LOCK_TIMEOUT_SECONDS = 20.0
 CLUSTER_MIN_PATTERNS = 2
 CLUSTER_MIN_OCCURRENCES = 3
 WEAK_ACCURACY_THRESHOLD = 60
 CLUSTER_WINDOW = timedelta(days=30)
 TIMELINE_LIMIT = 16
 FULL_PROFILE_INTERVAL_DAYS = 7
+STARTING_POINTS = frozenset({"beginner", "some", "comfortable", "unsure"})
+CEFR_LEVELS = frozenset({"A1", "A2", "B1", "B2", "C1", "C2"})
+SCENARIO_ALIASES = {"work": "arbeit", "doctor": "arzt", "housing": "wohnung", "everyday": "alltag"}
 BOARD_ROWS = 5
 LABEL_WIDTH = 36
 LABEL_MAX_LENGTH = 60
 WEEKDAYS_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
 REVIEW_CONTEXT = "spaced-repetition review"
-DEFAULT_LANGUAGETOOL_URL = "http://localhost:8081/v2/check"
-LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
+# A scene yields a handful of useful words; each one then enters the learner's word deck.
+SCENE_VOCABULARY_LIMIT = 5
+WORD_SOURCE_LIMIT = 5
+VOCABULARY_SCHEMA_VERSION = 1
+LEADING_ARTICLE = re.compile(r"^(der|die|das)\s+", re.IGNORECASE)
 
 CATEGORY_ORDER = (
     "article",
@@ -77,9 +95,6 @@ CATEGORY_LABELS = {
     "punctuation": "Zeichensetzung",
     "other": "Sonstiges",
 }
-VERIFICATION_STATUSES = frozenset(
-    {"verified", "supported", "no_finding", "uncertain", "unavailable", "not_checked"}
-)
 # Pattern keys are normalized so that German and English case names, common
 # abbreviations, and "governs/takes" phrasings all land on the same key.
 PATTERN_ALIASES = {
@@ -444,6 +459,102 @@ def accuracy_percent(correct: int, errors: int) -> int:
     return round(100 * (correct + 1) / (correct + errors + 2))
 
 
+def text_fingerprint(text: str) -> str:
+    """Recognize a reused task/answer despite casing, punctuation or whitespace."""
+    words = re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold())
+    return hashlib.sha256(" ".join(words).encode("utf-8")).hexdigest()
+
+
+def remember_text(mistake: dict[str, Any], field: str, text: str | None) -> None:
+    if text and text.strip():
+        fingerprint = text_fingerprint(text)
+        known = mistake.setdefault(field, [])
+        if fingerprint not in known:
+            known.append(fingerprint)
+
+
+def initialize_learning(mistake: dict[str, Any]) -> None:
+    """Pin retained evidence, including legacy undo snapshots, without inventing history."""
+    examples = mistake.get("examples") or []
+    if "first_example" not in mistake:
+        first = min(examples, key=lambda row: row.get("seen_at") or "") if examples else None
+        mistake["first_example"] = copy.deepcopy(first)
+    mistake.setdefault("coaching_history", [])
+    mistake.setdefault("helpful_hint", None)
+    mistake.setdefault("learning_proof", None)
+    mistake.setdefault("seen_prompts", [])
+    mistake.setdefault("seen_answers", [])
+    for example in examples:
+        remember_text(mistake, "seen_answers", example.get("corrected"))
+    for entry in mistake.get("review_history", []) + mistake["coaching_history"]:
+        remember_text(mistake, "seen_prompts", entry.get("prompt"))
+        remember_text(mistake, "seen_answers", entry.get("answer"))
+    for entry in mistake.get("correct_use_history", []):
+        remember_text(mistake, "seen_answers", entry.get("context"))
+    previous = (mistake.get("undo") or {}).get("state")
+    if previous:
+        initialize_learning(previous)
+
+
+def learning_event_view(event: dict[str, Any] | None) -> dict[str, Any] | None:
+    return {**event, "at_local": local_iso(event.get("at"))} if event else None
+
+
+def learning_proof_view(proof: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not proof:
+        return None
+    return {key: learning_event_view(proof[key]) for key in ("with_help", "independent")}
+
+
+def coaching_view(mistake: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "helpful_hint": learning_event_view(mistake.get("helpful_hint")),
+        "last_attempt": learning_event_view((mistake.get("coaching_history") or [None])[-1]),
+        "learning_proof": learning_proof_view(mistake.get("learning_proof")),
+    }
+
+
+def independent_use(
+    mistake: dict[str, Any], answer: str, moment: datetime, *, source: str, prompt: str | None = None
+) -> dict[str, Any] | None:
+    """A different, unaided production on a later local day is evidence of transfer."""
+    support = mistake.get("helpful_hint")
+    if not support or text_fingerprint(answer) in mistake.get("seen_answers", []):
+        return None
+    supported_at = parse_moment(support["at"])
+    last_error = _safe_moment(mistake.get("last_seen"))
+    proof = mistake.get("learning_proof")
+    if (
+        local_date(moment) <= local_date(supported_at)
+        or (last_error is not None and last_error > supported_at)
+        or (proof and proof["with_help"]["id"] == support["id"])
+    ):
+        return None
+    proof = {
+        "with_help": copy.deepcopy(support),
+        "independent": {"answer": answer, "prompt": prompt, "source": source, "at": iso(moment)},
+    }
+    mistake["learning_proof"] = proof
+    return learning_proof_view(proof)
+
+
+def append_coaching(
+    mistake: dict[str, Any], *, outcome: str, prompt: str, answer: str,
+    strategy: str | None, hint: str | None, moment: datetime,
+) -> dict[str, Any]:
+    entry = {
+        "id": f"c_{uuid.uuid4().hex[:12]}", "at": iso(moment), "outcome": outcome,
+        "prompt": prompt, "answer": answer, "strategy": strategy, "hint": hint,
+    }
+    mistake.setdefault("coaching_history", []).append(entry)
+    mistake["coaching_history"] = mistake["coaching_history"][-HISTORY_LIMIT:]
+    if outcome == "assisted":
+        mistake["helpful_hint"] = copy.deepcopy(entry)
+    remember_text(mistake, "seen_prompts", prompt)
+    remember_text(mistake, "seen_answers", answer)
+    return entry
+
+
 def compact(mistake: dict[str, Any]) -> dict[str, Any]:
     occurrences = int(mistake.get("occurrences", 0))
     examples = mistake.get("examples") or []
@@ -467,6 +578,138 @@ def compact(mistake: dict[str, Any]) -> dict[str, Any]:
         "next_review_local": local_iso(mistake.get("next_review")),
         "last_seen": mistake.get("last_seen"),
         "last_example": example_view(examples[-1]) if examples else None,
+        "first_example": example_view(mistake.get("first_example")),
+        "coaching": coaching_view(mistake),
+    }
+
+
+def brief(mistake: dict[str, Any]) -> dict[str, Any]:
+    """One row of a list: enough to reuse, rename, or schedule a pattern. `compact` adds examples and coaching."""
+    occurrences = int(mistake.get("occurrences", 0))
+    label, label_source = display_label(mistake)
+    return {
+        "id": mistake["id"],
+        "pattern": mistake["pattern"],
+        "label": label,
+        "label_source": label_source,
+        "category": mistake["category"],
+        "status": mistake.get("status"),
+        "occurrences": occurrences,
+        "right": correct_total(mistake),
+        "accuracy_percent": accuracy_percent(correct_total(mistake), occurrences),
+        "new": evidence(mistake) == 0,
+        "review_step": int(mistake.get("review_step", 0)),
+        "review_steps_total": len(REVIEW_INTERVALS),
+        "next_review_local": local_iso(mistake.get("next_review")),
+    }
+
+
+def row_view(verbose: bool) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    return compact if verbose else brief
+
+
+# --------------------------------------------------------------------------- word deck
+
+
+def word_key(term: str) -> str:
+    """One card per word. An article or a capital marks a German noun, so `der Morgen` and `morgen`,
+    or `das Essen` and `essen`, stay two words; an article, spacing, or umlaut spelling alone does not split one."""
+    text = re.sub(r"\s+", " ", unicodedata.normalize("NFKC", term).strip())
+    bare = LEADING_ARTICLE.sub("", text)
+    noun = bare != text or bare[:1].isupper()
+    return ("noun:" if noun else "word:") + spelling(bare)
+
+
+def word_id_for(key: str) -> str:
+    return "w_" + hashlib.sha256(key.encode("utf-8")).hexdigest()[:12]
+
+
+def learn_word(
+    words: list[dict[str, Any]], *, term: str, meaning: str, source: dict[str, Any], moment: datetime
+) -> tuple[dict[str, Any], str]:
+    """Add a scene word to the deck, or give a known word one more source without resetting its schedule."""
+    key = word_key(term)
+    word = next((item for item in words if item.get("key") == key), None)
+    if word is not None:
+        if not any(item.get("session_id") == source["session_id"] and item.get("turn_id") == source["turn_id"]
+                   for item in word.get("sources", [])):
+            word["sources"] = (word.get("sources", []) + [source])[-WORD_SOURCE_LIMIT:]
+        # `Reservierung` becomes `die Reservierung`; a respelling such as `die Strasse` never replaces `Straße`.
+        if LEADING_ARTICLE.sub("", term) == word["term"]:
+            word["term"] = term
+        remember_text(word, "seen_answers", source.get("example"))
+        return word, "known"
+    word = {
+        "id": word_id_for(key), "key": key, "term": term, "meaning": meaning, "status": "active",
+        "review_step": 0, "right": 0, "wrong": 0, "added_at": iso(moment),
+        "next_review": iso(moment + timedelta(days=REVIEW_INTERVALS[0])),
+        "last_reviewed": None, "mastered_at": None, "sources": [source],
+        "review_history": [], "seen_prompts": [], "seen_answers": [],
+    }
+    # The scene's own sentence cannot count as a new one in a review.
+    remember_text(word, "seen_answers", source.get("example"))
+    words.append(word)
+    return word, "added"
+
+
+def _is_due(item: dict[str, Any], moment: datetime) -> bool:
+    next_review = _safe_moment(item.get("next_review"))
+    return item.get("status") == "active" and next_review is not None and next_review <= moment
+
+
+def word_view(word: dict[str, Any], moment: datetime) -> dict[str, Any]:
+    """A word as agents use it: the cue to give, where it was met, earlier tasks, and its schedule."""
+    source = (word.get("sources") or [None])[-1]
+    return {
+        "id": word["id"],
+        "term": word["term"],
+        "meaning": word["meaning"],
+        "status": word.get("status"),
+        "due": _is_due(word, moment),
+        "review_step": int(word.get("review_step", 0)),
+        "review_steps_total": len(REVIEW_INTERVALS),
+        "right": int(word.get("right", 0)),
+        "wrong": int(word.get("wrong", 0)),
+        "next_review_local": local_iso(word.get("next_review")),
+        "source": {"scenario": source.get("scenario"), "example": source.get("example"),
+                   "at_local": local_iso(source.get("at"))} if source else None,
+        "recent_prompts": [entry["prompt"] for entry in word.get("review_history", [])[-3:]],
+    }
+
+
+def word_row(word: dict[str, Any], moment: datetime) -> dict[str, Any]:
+    """One line of the deck listing: enough to find a word's ID and schedule."""
+    return {
+        "id": word["id"],
+        "term": word["term"],
+        "meaning": word["meaning"],
+        "status": word.get("status"),
+        "due": _is_due(word, moment),
+        "review_step": int(word.get("review_step", 0)),
+        "next_review_local": local_iso(word.get("next_review")),
+    }
+
+
+def word_output(word: dict[str, Any], moment: datetime, verbose: bool) -> dict[str, Any]:
+    if not verbose:
+        return word_view(word, moment)
+    view = {key: value for key, value in word.items() if key not in {"undo", "seen_prompts", "seen_answers"}}
+    if word.get("undo"):
+        view["undo_available"] = {"action": word["undo"].get("action"), "at": word["undo"].get("at")}
+    return {**view, "due": _is_due(word, moment), "next_review_local": local_iso(word.get("next_review"))}
+
+
+def vocabulary_overview(words: list[dict[str, Any]], moment: datetime) -> dict[str, Any]:
+    active = [word for word in words if word.get("status") == "active"]
+    upcoming = sorted(
+        value for value in (_safe_moment(word.get("next_review")) for word in active) if value is not None and value > moment
+    )
+    return {
+        "total": len(words),
+        "active": len(active),
+        "mastered": sum(word.get("status") == "mastered" for word in words),
+        "due_now": sum(_is_due(word, moment) for word in active),
+        "next_local": to_local(upcoming[0]).isoformat() if upcoming else None,
     }
 
 
@@ -479,10 +722,28 @@ def errors_between(mistake: dict[str, Any], start: datetime, end: datetime) -> i
     return count
 
 
+# Validator results from the removed LanguageTool check. They are dropped when state is read,
+# so the next write takes them off the disk too.
+LEGACY_FIELDS = frozenset({"verification_history", "verification_status"})
+
+
+def drop_legacy_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key in LEGACY_FIELDS & value.keys():
+            del value[key]
+        for item in value.values():
+            drop_legacy_fields(item)
+    elif isinstance(value, list):
+        for item in value:
+            drop_legacy_fields(item)
+    return value
+
+
 def public(mistake: dict[str, Any]) -> dict[str, Any]:
     """The pattern as shown to callers: the undo snapshot is summarized, not dumped."""
-    view = {key: value for key, value in mistake.items() if key != "undo"}
+    view = {key: value for key, value in mistake.items() if key not in {"undo", "seen_prompts", "seen_answers"}}
     view["label"], view["label_source"] = display_label(mistake)
+    view["coaching"] = coaching_view(mistake)
     snapshot = mistake.get("undo")
     if snapshot:
         view["undo_available"] = {"action": snapshot.get("action"), "at": snapshot.get("at")}
@@ -500,18 +761,115 @@ def profile_view(profile: dict[str, Any]) -> dict[str, Any]:
         "name": profile.get("name"),
         "level": profile.get("level"),
         "native_language": profile.get("native_language"),
+        "goal": profile.get("goal"),
+        "explanation_language": profile.get("explanation_language"),
+        "starting_point": profile.get("starting_point"),
     }
 
 
-def _event_moments(mistakes: list[dict[str, Any]], sessions: list[dict[str, Any]]) -> list[datetime]:
+def onboarding_view(profile: dict[str, Any], *, has_activity: bool) -> dict[str, Any]:
+    """Resume the first encounter without requiring a name or a CEFR self-assessment."""
+    if profile.get("onboarding_completed_at") or has_activity:
+        stage = "complete"
+    elif profile.get("starting_point") or profile.get("level") in CEFR_LEVELS:
+        stage = "first_practice"
+    elif profile.get("welcome_shown_at"):
+        stage = "choose_start"
+    else:
+        stage = "welcome"
+    return {
+        "stage": stage,
+        "explanation_language": profile.get("explanation_language") or profile.get("native_language"),
+        "starting_point": profile.get("starting_point"),
+        "welcome_shown_at_local": local_iso(profile.get("welcome_shown_at")),
+        "completed_at_local": local_iso(profile.get("onboarding_completed_at")),
+    }
+
+
+def session_timing(session: dict[str, Any], moment: datetime) -> dict[str, Any]:
+    ended = _safe_moment(session.get("ended_at"))
+    elapsed = max(0, int(((ended or moment) - parse_moment(session["started_at"])).total_seconds()))
+    turns = sum(turn["speaker"] == "learner" for turn in session.get("utterances", []))
+    if not session.get("utterances"):
+        turns = session.get("turns") or 0
+    return {
+        "session_id": session["id"], "elapsed_seconds": elapsed, "learner_turns": turns,
+        "started_at_local": local_iso(session.get("started_at")), "ended_at_local": local_iso(session.get("ended_at")),
+        "target_seconds": session.get("target_seconds", 300),
+        "should_close": session.get("status") == "active" and elapsed >= session.get("target_seconds", 300),
+    }
+
+
+def is_scene_end_request(text: str) -> bool:
+    """Recognize unambiguous standalone controls, not words inside a learner sentence."""
+    folded = unicodedata.normalize("NFKC", text).casefold().replace("\u0307", "")
+    command = " ".join(re.findall(r"\w+", folded))
+    return command in {
+        "bitir", "bitirelim", "konuşmayı bitir", "konusmayi bitir", "sohbeti bitir",
+        "rollenspiel beenden", "szene beenden", "stop roleplay", "end roleplay",
+    }
+
+
+def session_debrief(
+    session: dict[str, Any], mistakes: list[dict[str, Any]], words: list[dict[str, Any]] | None = None
+) -> dict[str, Any]:
+    """Report linked, confirmed errors in this scene, not lifetime totals or invented diagnoses.
+
+    Each scene word carries `review`: `active` while its card is still being reviewed, `mastered`
+    when an earlier scene already took it to the top of the ladder, or null without a card.
+    """
+    cards = {word.get("key"): word for word in words or []}
+    vocabulary = [
+        {**item, "review": (cards.get(word_key(item["term"])) or {}).get("status")}
+        for item in session.get("vocabulary", [])
+    ]
+    patterns = {item["id"]: item for item in mistakes}
+    groups: dict[str, dict[str, Any]] = {}
+    seen = set()
+    for entry in session.get("feedback", []):
+        identifier = entry["mistake_id"]
+        identity = (identifier, entry["turn_id"], entry["original"])
+        if identifier not in patterns or identity in seen:
+            continue
+        seen.add(identity)
+        pattern = patterns[identifier]
+        group = groups.setdefault(identifier, {
+            "mistake_id": identifier, "label": display_label(pattern)[0], "rule": pattern["rule"],
+            "category": pattern["category"], "session_occurrences": 0,
+            "previously_tracked": identifier in session.get("known_pattern_ids", []),
+            "example": entry,
+        })
+        group["session_occurrences"] += 1
+    ranked = sorted(groups.values(), key=lambda item: (-int(item["previously_tracked"]), -item["session_occurrences"], item["label"]))
+    return {
+        "scenario": session["scenario"], "duration_seconds": session.get("duration_seconds"),
+        "duration_source": session.get("duration_source", "unknown"), "learner_turns": session.get("turns") or 0,
+        "confirmed_patterns": len(ranked), "confirmed_occurrences": sum(item["session_occurrences"] for item in ranked),
+        "corrections": ranked[:3], "recurring": [item for item in ranked if item["previously_tracked"] or item["session_occurrences"] > 1][:3],
+        "vocabulary": vocabulary,
+    }
+
+
+def _event_moments(
+    mistakes: list[dict[str, Any]], sessions: list[dict[str, Any]], profile: dict[str, Any] | None = None,
+    words: list[dict[str, Any]] | None = None,
+) -> list[datetime]:
     stamps: list[str | None] = []
+    # A first German production is activity even when it contains no mistake.
+    # Merely viewing the welcome or choosing a starting point is not practice.
+    if profile:
+        stamps.append(profile.get("onboarding_completed_at"))
     for mistake in mistakes:
         stamps.extend(example.get("seen_at") for example in mistake.get("examples", []))
         stamps.extend(entry.get("reviewed_at") for entry in mistake.get("review_history", []))
         stamps.extend(entry.get("observed_at") for entry in mistake.get("correct_use_history", []))
+        stamps.extend(entry.get("at") for entry in mistake.get("coaching_history", []))
     for session in sessions:
         stamps.append(session.get("started_at"))
         stamps.append(session.get("ended_at"))
+        stamps.extend(turn.get("at") for turn in session.get("utterances", []))
+    for word in words or []:
+        stamps.extend(entry.get("reviewed_at") for entry in word.get("review_history", []))
     moments = []
     for stamp in stamps:
         parsed = _safe_moment(stamp)
@@ -520,14 +878,36 @@ def _event_moments(mistakes: list[dict[str, Any]], sessions: list[dict[str, Any]
     return moments
 
 
+_UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue"})
+
+
+def spelling(text: str) -> str:
+    """One spelling for comparisons: für/fuer and daß/dass match (casefold turns ß into ss)."""
+    return text.casefold().translate(_UMLAUTS)
+
+
+def differs_only_in_spelling(left: str, right: str) -> bool:
+    """Keys that only add words or respell one are candidates for one root cause; a swapped word is not."""
+    before, after = left.split(), right.split()
+    matcher = difflib.SequenceMatcher(None, before, after, autojunk=False)
+    for tag, i1, i2, j1, j2 in matcher.get_opcodes():
+        if tag != "replace":
+            continue
+        old, new = spelling(" ".join(before[i1:i2])), spelling(" ".join(after[j1:j2]))
+        if old != new and difflib.SequenceMatcher(None, old, new, autojunk=False).ratio() < SPELLING_VARIANT_THRESHOLD:
+            return False
+    return True
+
+
 def similar_patterns(mistakes: list[dict[str, Any]], key: str, *, exclude_id: str | None = None) -> list[dict[str, Any]]:
-    target = compact_key(key)
+    target = spelling(compact_key(key))
     hits = []
     for mistake in mistakes:
         if mistake.get("id") == exclude_id:
             continue
-        ratio = difflib.SequenceMatcher(None, target, compact_key(mistake.get("pattern_key", "")), autojunk=False).ratio()
-        if ratio >= SIMILARITY_HINT_THRESHOLD:
+        other = mistake.get("pattern_key", "")
+        ratio = difflib.SequenceMatcher(None, target, spelling(compact_key(other)), autojunk=False).ratio()
+        if ratio >= SIMILARITY_HINT_THRESHOLD and differs_only_in_spelling(key, other):
             hits.append(
                 {
                     "id": mistake["id"],
@@ -564,6 +944,60 @@ def _read_json(path: Path, fallback: dict[str, Any]) -> dict[str, Any]:
     return value
 
 
+@contextlib.contextmanager
+def state_lock(home: Path, *, timeout: float = LOCK_TIMEOUT_SECONDS) -> Iterator[None]:
+    """Serialize whole commands on one state directory; the OS releases the lock if a process dies.
+
+    Every command reads, changes, and rewrites a JSON document. Without this lock, two
+    parallel `record` calls both read the old document and the later write drops the
+    other's pattern while both report success.
+    """
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        descriptor = os.open(home / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError as exc:
+        raise DeutschDNAError(f"Could not open the state lock in {home}: {exc}") from exc
+    deadline = time.monotonic() + timeout
+    locked = False
+    try:
+        while not locked:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                else:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+                locked = True
+            except OSError:
+                if time.monotonic() >= deadline:
+                    raise DeutschDNAError(f"Another DeutschDNA command kept {home} busy for {timeout:g}s; try again") from None
+                time.sleep(0.02)
+        yield
+    finally:
+        if locked:
+            try:
+                if fcntl is not None:
+                    fcntl.flock(descriptor, fcntl.LOCK_UN)
+                else:
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            except OSError:
+                pass
+        os.close(descriptor)
+
+
+def _replace_file(source: Path, target: Path) -> None:
+    """os.replace, retried briefly: on Windows a scanner or sync client may hold the target for a moment."""
+    for attempt in range(6):
+        try:
+            os.replace(source, target)
+            return
+        except PermissionError:
+            if attempt == 5:
+                raise
+            time.sleep(0.05 * (attempt + 1))
+
+
 def _atomic_write(path: Path, value: dict[str, Any]) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -576,7 +1010,7 @@ def _atomic_write(path: Path, value: dict[str, Any]) -> None:
             temporary.write("\n")
             temporary.flush()
             os.fsync(temporary.fileno())
-        os.replace(temporary_path, path)
+        _replace_file(temporary_path, path)
     except Exception as exc:
         try:
             temporary_path.unlink()
@@ -590,7 +1024,7 @@ def _atomic_write(path: Path, value: dict[str, Any]) -> None:
 
 
 def _migrate_mistakes(document: dict[str, Any]) -> dict[str, Any]:
-    """Upgrade schema-1 state in memory; the next write persists it. IDs are kept."""
+    """Upgrade old state in memory; the next write persists it. IDs are kept."""
     try:
         version = int(document.get("schema_version") or 1)
     except (TypeError, ValueError):
@@ -603,8 +1037,9 @@ def _migrate_mistakes(document: dict[str, Any]) -> dict[str, Any]:
         mistake.setdefault("correct_uses", 0)
         mistake.setdefault("last_correct_use", None)
         mistake.setdefault("mastered_at", None)
-        for field in ("examples", "verification_history", "review_history", "correct_use_history", "aliases", "merged_from"):
+        for field in ("examples", "review_history", "correct_use_history", "aliases", "merged_from"):
             mistake.setdefault(field, [])
+        initialize_learning(mistake)
     document["schema_version"] = SCHEMA_VERSION
     return document
 
@@ -615,6 +1050,7 @@ class StateStore:
         self.profile_path = home / "profile.json"
         self.mistakes_path = home / "mistakes.json"
         self.sessions_path = home / "sessions.json"
+        self.vocabulary_path = home / "vocabulary.json"
 
     # ---- documents
 
@@ -639,6 +1075,41 @@ class StateStore:
             _atomic_write(self.mistakes_path, {"schema_version": SCHEMA_VERSION, "mistakes": []})
         if not self.sessions_path.exists():
             _atomic_write(self.sessions_path, {"schema_version": SCHEMA_VERSION, "sessions": []})
+        if not self.vocabulary_path.exists():
+            _atomic_write(self.vocabulary_path, {"schema_version": VOCABULARY_SCHEMA_VERSION, "words": self._words_from_scenes()})
+
+    def _words_from_scenes(self) -> list[dict[str, Any]]:
+        """Words saved in scenes before the deck existed start their reviews now instead of being lost."""
+        words: list[dict[str, Any]] = []
+        for session in _read_json(self.sessions_path, {"sessions": []}).get("sessions", []):
+            met = _safe_moment(session.get("ended_at")) or _safe_moment(session.get("started_at")) or utc_now()
+            for item in session.get("vocabulary", []):
+                source = {"session_id": session.get("id"), "scenario": session.get("scenario"), "turn_id": item.get("turn_id"),
+                          "surface": item.get("surface"), "example": item.get("example"), "at": iso(met)}
+                learn_word(words, term=item["term"], meaning=item["meaning"], source=source, moment=met)
+        return words
+
+    def _vocabulary_document(self) -> dict[str, Any]:
+        self.ensure()
+        document = _read_json(self.vocabulary_path, {"schema_version": VOCABULARY_SCHEMA_VERSION, "words": []})
+        if not isinstance(document.get("words"), list):
+            raise DeutschDNAError(f"Expected a words list in {self.vocabulary_path}")
+        return document
+
+    def _remove_scene_words(self, key: str, session_id: str | None = None) -> None:
+        """Take a withdrawn word out of scene reports, in one scene or in all of them."""
+        document = self._session_document()
+        changed = False
+        for session in document["sessions"]:
+            if session_id is not None and session.get("id") != session_id:
+                continue
+            vocabulary = session.get("vocabulary", [])
+            kept = [item for item in vocabulary if word_key(item["term"]) != key]
+            if len(kept) != len(vocabulary):
+                session["vocabulary"] = kept
+                changed = True
+        if changed:
+            _atomic_write(self.sessions_path, document)
 
     def _profile(self) -> dict[str, Any]:
         self.ensure()
@@ -649,14 +1120,43 @@ class StateStore:
         document = _read_json(self.mistakes_path, {"schema_version": SCHEMA_VERSION, "mistakes": []})
         if not isinstance(document.get("mistakes"), list):
             raise DeutschDNAError(f"Expected a mistakes list in {self.mistakes_path}")
-        return _migrate_mistakes(document)
+        return _migrate_mistakes(drop_legacy_fields(document))
 
     def _session_document(self) -> dict[str, Any]:
         self.ensure()
         document = _read_json(self.sessions_path, {"schema_version": SCHEMA_VERSION, "sessions": []})
         if not isinstance(document.get("sessions"), list):
             raise DeutschDNAError(f"Expected a sessions list in {self.sessions_path}")
-        return document
+        return drop_legacy_fields(document)
+
+    @staticmethod
+    def _require_session(document: dict[str, Any], identifier: str) -> dict[str, Any]:
+        session = next((item for item in document["sessions"] if item.get("id") == identifier), None)
+        if session is None:
+            raise DeutschDNAError(f"Unknown session ID: {identifier}")
+        return session
+
+    def _session_feedback(self, session_id: str, mistake: dict[str, Any], example: dict[str, Any]) -> None:
+        """Keep session evidence after the rolling pattern history expires; repairable by undo/forget."""
+        document = self._session_document()
+        session = self._require_session(document, session_id)
+        feedback = session.setdefault("feedback", [])
+        if not any(item["event_id"] == example["event_id"] and item["mistake_id"] == mistake["id"] for item in feedback):
+            feedback.append({**copy.deepcopy(example), "mistake_id": mistake["id"],
+                             "label": display_label(mistake)[0], "category": mistake["category"], "rule": mistake["rule"]})
+            _atomic_write(self.sessions_path, document)
+
+    def _remove_session_feedback(self, mistake_id: str, event_id: str) -> None:
+        document = self._session_document()
+        changed = False
+        for session in document["sessions"]:
+            feedback = session.get("feedback", [])
+            kept = [item for item in feedback if not (item["mistake_id"] == mistake_id and item["event_id"] == event_id)]
+            if len(kept) != len(feedback):
+                session["feedback"] = kept
+                changed = True
+        if changed:
+            _atomic_write(self.sessions_path, document)
 
     @staticmethod
     def _find(mistakes: list[dict[str, Any]], identifier: str) -> dict[str, Any] | None:
@@ -687,17 +1187,72 @@ class StateStore:
                     return mistake, "alias"
         return None, None
 
+    @staticmethod
+    def _rewrite_session_ids(document: dict[str, Any], old_id: str, new_id: str | None) -> list[dict[str, Any]]:
+        """Point session references at new_id (or drop them); return a journal that can reverse a merge."""
+        journal = []
+        for session in document["sessions"]:
+            change: dict[str, Any] = {}
+            if session.get("focus_id") == old_id:
+                session["focus_id"] = new_id
+                change["focus_id"] = True
+            for field in ("known_pattern_ids", "mistake_ids"):
+                values = session.get(field) or []
+                if old_id in values:
+                    change[field] = list(values)
+                    session[field] = list(dict.fromkeys(item for item in (new_id if value == old_id else value for value in values) if item))
+            moved = [item["event_id"] for item in session.get("feedback", []) if item["mistake_id"] == old_id]
+            if moved:
+                session["feedback"] = [
+                    {**item, "mistake_id": new_id if item["mistake_id"] == old_id else item["mistake_id"]}
+                    for item in session["feedback"] if item["mistake_id"] != old_id or new_id
+                ]
+                change["feedback_event_ids"] = moved
+            if change:
+                journal.append({"session_id": session.get("id"), **change})
+        return journal
+
+    @staticmethod
+    def _put_back(values: list[str], before: list[str], source_id: str, target_id: str, *, keep_target: bool) -> list[str]:
+        """Undo one ID replacement in a reference list, keeping whatever else changed since the merge."""
+        result = [value for value in values if value != target_id or keep_target]
+        if source_id not in result:
+            position = before.index(source_id) if source_id in before else len(result)
+            result.insert(min(position, len(result)), source_id)
+        return result
+
+    @staticmethod
+    def _restore_session_ids(document: dict[str, Any], journal: list[dict[str, Any]], source_id: str, target_id: str) -> None:
+        """Reverse a merge's reference changes ID by ID, so later scene changes and other merges survive."""
+        for change in journal:
+            session = next((item for item in document["sessions"] if item.get("id") == change["session_id"]), None)
+            if session is None:
+                continue
+            if change.get("focus_id") and session.get("focus_id") == target_id:
+                session["focus_id"] = source_id
+            moved = set(change.get("feedback_event_ids", []))
+            restored = False
+            for item in session.get("feedback", []):
+                if item["mistake_id"] == target_id and item["event_id"] in moved:
+                    item["mistake_id"] = source_id
+                    restored = True
+            linked = {item["mistake_id"] for item in session.get("feedback", [])}
+            if "known_pattern_ids" in change:
+                before = change["known_pattern_ids"]
+                session["known_pattern_ids"] = StateStore._put_back(
+                    session.get("known_pattern_ids") or [], before, source_id, target_id, keep_target=target_id in before
+                )
+            # A scene finished after the merge listed the target for the source's feedback.
+            if "mistake_ids" in change or (restored and session.get("mistake_ids")):
+                before = change.get("mistake_ids") or []
+                session["mistake_ids"] = StateStore._put_back(
+                    session.get("mistake_ids") or [], before, source_id, target_id,
+                    keep_target=target_id in before or target_id in linked,
+                )
+
     def _replace_session_ids(self, old_id: str, new_id: str | None) -> None:
         document = self._session_document()
-        changed = False
-        for session in document["sessions"]:
-            ids = session.get("mistake_ids") or []
-            if old_id not in ids:
-                continue
-            replaced = [new_id if item == old_id else item for item in ids]
-            session["mistake_ids"] = list(dict.fromkeys(item for item in replaced if item))
-            changed = True
-        if changed:
+        if self._rewrite_session_ids(document, old_id, new_id):
             _atomic_write(self.sessions_path, document)
 
     # ---- profile
@@ -708,17 +1263,31 @@ class StateStore:
         name: str | None = None,
         native_language: str | None = None,
         level: str | None = None,
+        goal: str | None = None,
+        explanation_language: str | None = None,
+        starting_point: str | None = None,
+        welcome_shown: bool = False,
+        onboarding_complete: bool = False,
         at: datetime | None = None,
     ) -> dict[str, Any]:
+        if starting_point is not None and starting_point not in STARTING_POINTS:
+            raise DeutschDNAError("starting_point must be beginner, some, comfortable, or unsure")
         moment = at or utc_now()
         profile_was_missing = not self.profile_path.exists()
         self.ensure()
         profile = _read_json(self.profile_path, {})
         if profile_was_missing:
             profile["created_at"] = iso(moment)
-        for key, value in (("name", name), ("native_language", native_language), ("level", level)):
+        for key, value in (
+            ("name", name), ("native_language", native_language), ("level", level), ("goal", goal),
+            ("explanation_language", explanation_language), ("starting_point", starting_point),
+        ):
             if value is not None:
                 profile[key] = value
+        if welcome_shown and not profile.get("welcome_shown_at"):
+            profile["welcome_shown_at"] = iso(moment)
+        if onboarding_complete and not profile.get("onboarding_completed_at"):
+            profile["onboarding_completed_at"] = iso(moment)
         profile["updated_at"] = iso(moment)
         _atomic_write(self.profile_path, profile)
         return profile
@@ -741,17 +1310,27 @@ class StateStore:
         rule: str | None = None,
         mistake_id: str | None = None,
         context: str | None = None,
-        verification_status: str = "not_checked",
         at: datetime | None = None,
         event_id: str | None = None,
         label: str | None = None,
+        session_id: str | None = None,
+        turn_id: str | None = None,
     ) -> tuple[dict[str, Any], str, dict[str, Any]]:
         label = clean_label(label)
-        if verification_status not in VERIFICATION_STATUSES:
-            raise DeutschDNAError(f"Unknown verification status '{verification_status}'")
         if not original.strip() or not corrected.strip():
             raise DeutschDNAError("original and corrected must not be empty")
         moment = at or utc_now()
+        if bool(session_id) != bool(turn_id):
+            raise DeutschDNAError("Session feedback requires both --session-id and --turn-id")
+        session = None
+        if session_id:
+            session = self._require_session(self._session_document(), session_id)
+            if session.get("status") != "debriefing":
+                raise DeutschDNAError("Stop the scene before recording feedback; only debriefing sessions accept corrections")
+            turn = next((item for item in session.get("utterances", []) if item["id"] == turn_id), None)
+            if not turn or turn["speaker"] != "learner" or original.strip() not in turn["text"]:
+                raise DeutschDNAError("The original must be an actual sentence from the referenced learner turn")
+            moment = parse_moment(turn["at"])
         document = self._mistake_document()
         mistakes = document["mistakes"]
         resolved_by: str | None = None
@@ -766,12 +1345,24 @@ class StateStore:
                 raise DeutschDNAError(f"Unknown category '{category}'. Choose from: {', '.join(CATEGORY_ORDER)}")
             existing, resolved_by = self._resolve(mistakes, category, pattern)
 
+        if session and session.get("input_mode") == "transcript":
+            error_category = existing["category"] if existing else category
+            if error_category in {"spelling", "punctuation"}:
+                raise DeutschDNAError("A speech transcript cannot establish learner spelling or punctuation errors")
         effective_event_id = event_id or auto_event_id(original, corrected)
+        if session is not None:
+            identity = existing["id"] if existing else mistake_id_for(category, pattern_key(pattern))
+            effective_event_id = f"{session_id}:{turn_id}:{identity}:{auto_event_id(original, corrected)}"
+            if any(item["mistake_id"] == identity and item["turn_id"] == turn_id and item["original"] == original.strip()
+                   for item in session.get("feedback", [])):
+                return existing, "duplicate", {"resolved_by": resolved_by}
         if existing:
             for example in existing.get("examples", []):
                 if example.get("event_id") != effective_event_id:
                     continue
-                if event_id or within(example.get("seen_at"), moment, DUPLICATE_RECORD_WINDOW):
+                if event_id or session_id or within(example.get("seen_at"), moment, DUPLICATE_RECORD_WINDOW):
+                    if session_id:
+                        self._session_feedback(session_id, existing, example)
                     return existing, "duplicate", {"resolved_by": resolved_by}
 
         example = {
@@ -781,7 +1372,8 @@ class StateStore:
             "seen_at": iso(moment),
             "event_id": effective_event_id,
         }
-        verification_event = {"status": verification_status, "checked_at": iso(moment)}
+        if session_id:
+            example.update({"session_id": session_id, "turn_id": turn_id})
         extra: dict[str, Any] = {"resolved_by": resolved_by}
 
         if existing:
@@ -791,7 +1383,9 @@ class StateStore:
                 "review_step": int(existing.get("review_step", 0)),
                 "status": existing.get("status"),
                 "occurrences": int(existing.get("occurrences", 0)),
-                "first_example": example_view(earlier[0] if earlier else None),
+                "first_example": example_view(existing.get("first_example")),
+                "first_example_is_original": bool(existing.get("first_example"))
+                and existing["first_example"].get("seen_at") == existing.get("first_seen"),
                 "last_example": example_view(earlier[-1] if earlier else None),
             }
             was_mastered = existing.get("status") == "mastered"
@@ -813,8 +1407,6 @@ class StateStore:
                 existing["mastered_at"] = None
             existing.setdefault("examples", []).append(example)
             existing["examples"] = existing["examples"][-EXAMPLE_LIMIT:]
-            existing.setdefault("verification_history", []).append(verification_event)
-            existing["verification_history"] = existing["verification_history"][-HISTORY_LIMIT:]
             status = "updated"
             mistake = existing
         else:
@@ -841,7 +1433,6 @@ class StateStore:
                 "next_review": iso(moment + timedelta(days=REVIEW_INTERVALS[0])),
                 "mastered_at": None,
                 "examples": [example],
-                "verification_history": [verification_event],
                 "review_history": [],
                 "correct_use_history": [],
                 "aliases": [],
@@ -850,13 +1441,19 @@ class StateStore:
                 "label": label,
             }
             mistakes.append(mistake)
+            initialize_learning(mistake)
             status = "recorded"
             extra["similar_patterns"] = similar_patterns(mistakes, key, exclude_id=mistake["id"])
 
+        if mistake.get("first_example") is None:
+            mistake["first_example"] = copy.deepcopy(example)
+        remember_text(mistake, "seen_answers", corrected)
         extra["recent_occurrences"] = sum(
             1 for item in mistake.get("examples", []) if within(item.get("seen_at"), moment, timedelta(days=RECENT_DAYS))
         )
         _atomic_write(self.mistakes_path, document)
+        if session_id:
+            self._session_feedback(session_id, mistake, example)
         return mistake, status, extra
 
     def observe(
@@ -866,6 +1463,9 @@ class StateStore:
         context: str | None = None,
         at: datetime | None = None,
     ) -> list[dict[str, Any]]:
+        if not context or not context.strip():
+            raise DeutschDNAError("Provide the learner's unprompted sentence with --context")
+        context = context.strip()
         moment = at or utc_now()
         document = self._mistake_document()
         mistakes = document["mistakes"]
@@ -878,17 +1478,19 @@ class StateStore:
                 for entry in history
             )
             if duplicate:
-                results.append({"id": mistake["id"], "pattern": mistake["pattern"], "status": "duplicate"})
+                results.append({"id": mistake["id"], "pattern": mistake["pattern"], "status": "duplicate", "learning_proof": None})
                 continue
             _snapshot(mistake, "observe", moment)
+            fresh = text_fingerprint(context) not in mistake.get("seen_answers", [])
+            proof = independent_use(mistake, context, moment, source="spontaneous")
             mistake["correct_uses"] = int(mistake.get("correct_uses", 0)) + 1
             history.append({"observed_at": iso(moment), "context": context})
             mistake["correct_use_history"] = history[-HISTORY_LIMIT:]
             mistake["last_correct_use"] = iso(moment)
             status = "observed"
             next_review = _safe_moment(mistake.get("next_review"))
-            if mistake.get("status") == "active" and next_review is not None and next_review <= moment:
-                self._apply_pass(mistake, moment, source="observed")
+            if fresh and mistake.get("status") == "active" and next_review is not None and next_review <= moment:
+                self._apply_pass(mistake, moment, source="observed", answer=context)
                 status = "observed_and_advanced"
             results.append(
                 {
@@ -900,10 +1502,46 @@ class StateStore:
                     "next_review": mistake.get("next_review"),
                     "mastered": mistake.get("status") == "mastered",
                     "last_mistake": example_view((mistake.get("examples") or [None])[-1]),
+                    "learning_proof": proof,
                 }
             )
+            remember_text(mistake, "seen_answers", context)
         _atomic_write(self.mistakes_path, document)
         return results
+
+    def coach(
+        self, identifier: str, *, outcome: str, prompt: str, answer: str,
+        strategy: str | None = None, hint: str | None = None, at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Remember how an exercise went; guided practice never changes the review ladder."""
+        if outcome not in {"independent", "assisted", "shown", "miss"}:
+            raise DeutschDNAError("outcome must be independent, assisted, shown, or miss")
+        prompt, answer = prompt.strip(), answer.strip()
+        strategy, hint = (strategy or "").strip() or None, (hint or "").strip() or None
+        if not prompt or not answer:
+            raise DeutschDNAError("Provide the actual --prompt and --answer")
+        if bool(strategy) != bool(hint) or (outcome in {"assisted", "shown"} and not hint):
+            raise DeutschDNAError("Record both --strategy and the actual --hint for supported practice")
+        if outcome == "independent" and hint:
+            raise DeutschDNAError("An independent answer cannot include a hint; use assisted or shown")
+        moment = at or utc_now()
+        document = self._mistake_document()
+        mistake = self._require(document["mistakes"], identifier)
+        fields = {"outcome": outcome, "prompt": prompt, "answer": answer, "strategy": strategy, "hint": hint}
+        if any(all(entry.get(key) == value for key, value in fields.items())
+               and within(entry.get("at"), moment, DUPLICATE_EVENT_WINDOW)
+               for entry in mistake.get("coaching_history", [])):
+            return {"status": "duplicate", "mistake": mistake, "learning_proof": None}
+        if outcome == "independent" and (
+            text_fingerprint(prompt) in mistake.get("seen_prompts", [])
+            or text_fingerprint(answer) in mistake.get("seen_answers", [])
+        ):
+            raise DeutschDNAError("Independent practice needs a new situation and answer; copied corrections are shown")
+        _snapshot(mistake, "coach", moment)
+        proof = independent_use(mistake, answer, moment, source="practice", prompt=prompt) if outcome == "independent" else None
+        entry = append_coaching(mistake, **fields, moment=moment)
+        _atomic_write(self.mistakes_path, document)
+        return {"status": "coached", "attempt": learning_event_view(entry), "mistake": mistake, "learning_proof": proof}
 
     # ---- reviewing
 
@@ -921,7 +1559,7 @@ class StateStore:
         return due_items[: max(0, limit)]
 
     @staticmethod
-    def _apply_pass(mistake: dict[str, Any], moment: datetime, *, source: str, answer: str | None = None) -> None:
+    def _apply_pass(mistake: dict[str, Any], moment: datetime, *, source: str, answer: str | None = None, prompt: str | None = None) -> None:
         step = int(mistake.get("review_step", 0)) + 1
         mistake["review_step"] = step
         mistake["consecutive_successes"] = int(mistake.get("consecutive_successes", 0)) + 1
@@ -937,6 +1575,8 @@ class StateStore:
         entry = {"result": "pass", "reviewed_at": iso(moment), "source": source}
         if answer:
             entry["answer"] = answer
+        if prompt:
+            entry["prompt"] = prompt
         mistake.setdefault("review_history", []).append(entry)
         mistake["review_history"] = mistake["review_history"][-HISTORY_LIMIT:]
 
@@ -947,6 +1587,9 @@ class StateStore:
         result: str,
         answer: str | None = None,
         correction: str | None = None,
+        prompt: str | None = None,
+        strategy: str | None = None,
+        hint: str | None = None,
         at: datetime | None = None,
     ) -> tuple[dict[str, Any], str]:
         if result not in {"pass", "hard", "fail"}:
@@ -954,6 +1597,15 @@ class StateStore:
         moment = at or utc_now()
         document = self._mistake_document()
         mistake = self._require(document["mistakes"], identifier)
+        clean_answer = (answer or "").strip()
+        prompt = (prompt or "").strip()
+        strategy, hint = (strategy or "").strip() or None, (hint or "").strip() or None
+        if not prompt or not clean_answer:
+            raise DeutschDNAError("A review requires the actual --prompt and --answer; use coach for guided practice")
+        if bool(strategy) != bool(hint):
+            raise DeutschDNAError("Provide both --strategy and --hint")
+        if result == "pass" and hint:
+            raise DeutschDNAError("A hinted answer cannot pass; use hard or coach")
 
         history = mistake.get("review_history") or []
         last = history[-1] if history else None
@@ -961,15 +1613,25 @@ class StateStore:
             last
             and last.get("result") == result
             and last.get("source", "review") == "review"
+            and last.get("answer") == clean_answer and last.get("prompt") == prompt
+            and last.get("hint") == hint and last.get("strategy") == strategy
+            and last.get("correction") == correction
             and within(last.get("reviewed_at"), moment, DUPLICATE_EVENT_WINDOW)
         ):
             return mistake, "duplicate"
 
+        next_review = _safe_moment(mistake.get("next_review"))
+        if mistake.get("status") != "active" or next_review is None or next_review > moment:
+            raise DeutschDNAError("This pattern is not due; use coach for practice without advancing the schedule")
+        if text_fingerprint(prompt) in mistake.get("seen_prompts", []):
+            raise DeutschDNAError("This review prompt was already used; ask a new situation")
+        if result == "pass" and text_fingerprint(clean_answer) in mistake.get("seen_answers", []):
+            raise DeutschDNAError("This answer was already seen; test transfer with a new sentence")
         _snapshot(mistake, "grade", moment)
         mistake["review_attempts"] = int(mistake.get("review_attempts", 0)) + 1
-        clean_answer = answer.strip() if answer and answer.strip() else None
         if result == "pass":
-            self._apply_pass(mistake, moment, source="review", answer=clean_answer)
+            independent_use(mistake, clean_answer, moment, source="review", prompt=prompt)
+            self._apply_pass(mistake, moment, source="review", answer=clean_answer, prompt=prompt)
         else:
             if result == "hard":
                 mistake["status"] = "active"
@@ -998,25 +1660,35 @@ class StateStore:
                     }
                 )
                 mistake["examples"] = mistake["examples"][-EXAMPLE_LIMIT:]
+                if mistake.get("first_example") is None:
+                    mistake["first_example"] = copy.deepcopy(mistake["examples"][-1])
             mistake["last_reviewed"] = iso(moment)
-            entry = {"result": result, "reviewed_at": iso(moment), "source": "review"}
+            entry = {"result": result, "reviewed_at": iso(moment), "source": "review", "prompt": prompt}
             if clean_answer:
                 entry["answer"] = clean_answer
             mistake.setdefault("review_history", []).append(entry)
             mistake["review_history"] = mistake["review_history"][-HISTORY_LIMIT:]
 
+        mistake["review_history"][-1].update({"strategy": strategy, "hint": hint, "correction": correction})
+        if hint:
+            append_coaching(mistake, outcome="assisted" if result == "hard" else "miss",
+                            prompt=prompt, answer=clean_answer, strategy=strategy, hint=hint, moment=moment)
+        remember_text(mistake, "seen_prompts", prompt)
+        remember_text(mistake, "seen_answers", clean_answer)
+        remember_text(mistake, "seen_answers", correction)
         _atomic_write(self.mistakes_path, document)
         return mistake, "graded"
 
     # ---- inspection and repair
 
-    def list(self, *, status: str = "active", category: str | None = None) -> list[dict[str, Any]]:
+    def list(self, *, status: str = "active", category: str | None = None, verbose: bool = False) -> list[dict[str, Any]]:
         if status not in {"active", "mastered", "all"}:
             raise DeutschDNAError("status must be active, mastered, or all")
         if category is not None and category not in CATEGORIES:
             raise DeutschDNAError(f"Unknown category '{category}'. Choose from: {', '.join(CATEGORY_ORDER)}")
+        view = row_view(verbose)
         rows = [
-            compact(mistake)
+            view(mistake)
             for mistake in self._mistake_document()["mistakes"]
             if (status == "all" or mistake.get("status") == status)
             and (category is None or mistake.get("category") == category)
@@ -1036,25 +1708,42 @@ class StateStore:
         return mistake
 
     def undo(self, identifier: str) -> dict[str, Any]:
-        """Revert the most recent record, grade, or observe on one pattern. One level deep."""
+        """Revert the most recent pattern change, including coaching. One level deep."""
         document = self._mistake_document()
         mistakes = document["mistakes"]
         mistake = self._require(mistakes, identifier)
         snapshot = mistake.get("undo")
         if not snapshot:
             raise DeutschDNAError(
-                f"Nothing to undo for {identifier}: only the latest record, grade, or observe can be undone"
+                f"Nothing to undo for {identifier}: only the latest record, grade, observe, coach, or merge can be undone"
             )
         undone = {"undone": snapshot.get("action"), "undone_at": snapshot.get("at")}
+        if snapshot.get("action") == "merge":
+            source = snapshot["merged_source"]
+            if self._find(mistakes, source["id"]):
+                raise DeutschDNAError(f"Cannot undo the merge: {source['id']} exists again")
+            restored = snapshot["state"]
+            mistakes[mistakes.index(mistake)] = restored
+            mistakes.insert(min(int(snapshot.get("source_index", len(mistakes))), len(mistakes)), source)
+            sessions = self._session_document()
+            self._restore_session_ids(sessions, snapshot.get("sessions") or [], source["id"], restored["id"])
+            _atomic_write(self.mistakes_path, document)
+            if snapshot.get("sessions"):
+                _atomic_write(self.sessions_path, sessions)
+            return {"status": "undone", **undone, "mistake": restored, "restored": source}
+        if snapshot.get("action") == "record":
+            latest = (mistake.get("examples") or [{}])[-1]
+            if latest.get("session_id") and latest.get("event_id"):
+                self._remove_session_feedback(identifier, latest["event_id"])
         if snapshot.get("state") is None:
             document["mistakes"] = [item for item in mistakes if item.get("id") != identifier]
             _atomic_write(self.mistakes_path, document)
             self._replace_session_ids(identifier, None)
-            return {"status": "removed", **undone, "mistake": public(mistake)}
+            return {"status": "removed", **undone, "mistake": mistake}
         restored = snapshot["state"]
         mistakes[mistakes.index(mistake)] = restored
         _atomic_write(self.mistakes_path, document)
-        return {"status": "undone", **undone, "mistake": public(restored)}
+        return {"status": "undone", **undone, "mistake": restored}
 
     def merge(self, source_id: str, target_id: str, *, at: datetime | None = None) -> dict[str, Any]:
         if source_id == target_id:
@@ -1064,19 +1753,31 @@ class StateStore:
         mistakes = document["mistakes"]
         source = self._require(mistakes, source_id)
         target = self._require(mistakes, target_id)
+        # Both patterns are kept whole in the target's undo snapshot, so a wrong merge can be reverted.
+        before = copy.deepcopy({key: value for key, value in target.items() if key != "undo"})
+        merged_source = copy.deepcopy({key: value for key, value in source.items() if key != "undo"})
+        source_index = mistakes.index(source)
 
         target["occurrences"] = int(target.get("occurrences", 0)) + int(source.get("occurrences", 0))
         for field in ("correct_uses", "review_attempts", "review_failures"):
             target[field] = int(target.get(field, 0)) + int(source.get(field, 0))
         for field, stamp, limit in (
             ("examples", "seen_at", EXAMPLE_LIMIT),
-            ("verification_history", "checked_at", HISTORY_LIMIT),
             ("review_history", "reviewed_at", HISTORY_LIMIT),
             ("correct_use_history", "observed_at", HISTORY_LIMIT),
+            ("coaching_history", "at", HISTORY_LIMIT),
         ):
             combined = list(target.get(field, [])) + list(source.get(field, []))
             combined.sort(key=lambda item: item.get(stamp) or "")
             target[field] = combined[-limit:]
+        for field in ("seen_prompts", "seen_answers"):
+            target[field] = list(dict.fromkeys(target.get(field, []) + source.get(field, [])))
+        anchors = [entry for entry in (target.get("first_example"), source.get("first_example")) if entry]
+        target["first_example"] = min(anchors, key=lambda entry: entry.get("seen_at") or "") if anchors else None
+        supports = [entry for entry in (target.get("helpful_hint"), source.get("helpful_hint")) if entry]
+        target["helpful_hint"] = max(supports, key=lambda entry: entry["at"]) if supports else None
+        proofs = [entry for entry in (target.get("learning_proof"), source.get("learning_proof")) if entry]
+        target["learning_proof"] = max(proofs, key=lambda entry: entry["independent"]["at"]) if proofs else None
         first_seen = [value for value in (target.get("first_seen"), source.get("first_seen")) if value]
         last_seen = [value for value in (target.get("last_seen"), source.get("last_seen")) if value]
         if first_seen:
@@ -1099,13 +1800,17 @@ class StateStore:
             if alias not in aliases:
                 aliases.append(alias)
         target["aliases"] = aliases
-        target.pop("undo", None)
         target.setdefault("merged_from", []).append(
             {"id": source["id"], "pattern": source["pattern"], "category": source["category"], "merged_at": iso(moment)}
         )
+        sessions = self._session_document()
+        journal = self._rewrite_session_ids(sessions, source_id, target_id)
+        target["undo"] = {"action": "merge", "at": iso(moment), "state": before, "merged_source": merged_source,
+                          "source_index": source_index, "sessions": journal}
         document["mistakes"] = [item for item in mistakes if item.get("id") != source_id]
         _atomic_write(self.mistakes_path, document)
-        self._replace_session_ids(source_id, target_id)
+        if journal:
+            _atomic_write(self.sessions_path, sessions)
         return target
 
     def rename(
@@ -1168,11 +1873,13 @@ class StateStore:
 
     # ---- reporting
 
-    def summary(self, *, at: datetime | None = None) -> dict[str, Any]:
+    def summary(self, *, at: datetime | None = None, verbose: bool = False) -> dict[str, Any]:
         moment = at or utc_now()
+        view = row_view(verbose)
         profile = self._profile()
         mistakes = self._mistake_document()["mistakes"]
         sessions = self._session_document()["sessions"]
+        words = self._vocabulary_document()["words"]
 
         categories: dict[str, dict[str, Any]] = {}
         for mistake in mistakes:
@@ -1240,10 +1947,10 @@ class StateStore:
             )
         )
 
-        active_rows = [compact(item) for item in mistakes if item.get("status") == "active"]
+        active_rows = [view(item) for item in mistakes if item.get("status") == "active"]
         weakest = sorted(active_rows, key=lambda row: (row["accuracy_percent"], -row["occurrences"], row["pattern"]))[:5]
-        due_rows = [compact(item) for item in self.due(at=moment, limit=len(mistakes))]
-        moments = [value for value in _event_moments(mistakes, sessions) if value <= moment]
+        due_rows = [view(item) for item in self.due(at=moment, limit=len(mistakes))]
+        moments = [value for value in _event_moments(mistakes, sessions, profile, words) if value <= moment]
         days = {local_date(value) for value in moments}
         today = local_date(moment)
         return {
@@ -1264,15 +1971,18 @@ class StateStore:
             "recent_errors_total": sum(errors_between(item, window_start, moment) for item in mistakes),
             "weakest_patterns": weakest,
             "due_patterns": due_rows[:5],
+            "vocabulary": vocabulary_overview(words, moment),
         }
 
-    def recap(self, *, days: int = RECENT_DAYS, at: datetime | None = None) -> dict[str, Any]:
+    def recap(self, *, days: int = RECENT_DAYS, at: datetime | None = None, verbose: bool = False) -> dict[str, Any]:
         moment = at or utc_now()
+        view = row_view(verbose)
         window = max(1, days)
         since = moment - timedelta(days=window)
         profile = self._profile()
         mistakes = self._mistake_document()["mistakes"]
         sessions = self._session_document()["sessions"]
+        words = self._vocabulary_document()["words"]
 
         def in_window(stamp: str | None) -> bool:
             parsed = _safe_moment(stamp)
@@ -1316,19 +2026,37 @@ class StateStore:
                 mastered_labels.append(display_label(mistake)[0])
         recurring.sort(key=lambda row: row["last_seen"] or "", reverse=True)
         recurring.sort(key=lambda row: -row["count"])
+        word_reviews = {"total": 0, "pass": 0, "hard": 0, "fail": 0}
+        for word in words:
+            for entry in word.get("review_history", []):
+                if in_window(entry.get("reviewed_at")):
+                    word_reviews["total"] += 1
+                    word_reviews[entry["result"]] += 1
 
         roleplays = [
             session
             for session in sessions
             if session.get("type", "roleplay") == "roleplay" and in_window(session.get("started_at"))
         ]
-        due_rows = [compact(item) for item in self.due(at=moment, limit=len(mistakes))]
-        moments = [value for value in _event_moments(mistakes, sessions) if value <= moment]
+        due_items = self.due(at=moment, limit=len(mistakes))
+        due_rows = [view(item) for item in due_items]
+        moments = [value for value in _event_moments(mistakes, sessions, profile, words) if value <= moment]
         last = max(moments) if moments else None
         day_set = {local_date(value) for value in moments}
-        active_rows = [compact(item) for item in mistakes if item.get("status") == "active"]
+        active = [item for item in mistakes if item.get("status") == "active"]
+        active_rows = [view(item) for item in active]
         weakest = sorted(active_rows, key=lambda row: (row["accuracy_percent"], -row["occurrences"], row["pattern"]))
         next_focus = due_rows[0] if due_rows else (weakest[0] if weakest else None)
+        # The opener quotes one old sentence: the first due pattern, else the most recent active mistake.
+        recent = [item for item in active if item.get("examples")]
+        callback_target = due_items[0] if due_items else (
+            max(recent, key=lambda item: item["examples"][-1].get("seen_at") or "") if recent else None
+        )
+        callback = {**compact(callback_target), "reason": "due" if due_items else "recent"} if callback_target else None
+        needs_label = [
+            {"id": item["id"], "pattern": item["pattern"], "category": item["category"], "rule": item.get("rule")}
+            for item in active if display_label(item)[1] == "key"
+        ]
         upcoming = sorted(
             parsed
             for parsed in (_safe_moment(item.get("next_review")) for item in mistakes if item.get("status") == "active")
@@ -1341,26 +2069,37 @@ class StateStore:
             "later_today_first_local": to_local(later_today[0]).isoformat() if later_today else None,
             "next_local": to_local(upcoming[0]).isoformat() if upcoming else None,
         }
-        shown = _safe_moment(profile.get("last_full_profile_at"))
-        full_profile_due = last is not None and (
+        shown = _safe_moment(profile.get("last_full_profile_at")) or _safe_moment(profile.get("onboarding_completed_at"))
+        full_profile_due = bool(mistakes) and last is not None and (
             shown is None
             or (moment - shown >= timedelta(days=FULL_PROFILE_INTERVAL_DAYS) and last > shown)
         )
         recurring_ids = {row["id"] for row in recurring}
-        due_ids = {row["id"] for row in due_rows}
+        due_ids = {item["id"] for item in due_items}
         ranked = sorted(
-            active_rows,
-            key=lambda row: (row["id"] not in due_ids, -row["occurrences"], row["next_review"] or "~", row["label"]),
+            active,
+            key=lambda item: (item["id"] not in due_ids, -int(item.get("occurrences", 0)),
+                              item.get("next_review") or "~", display_label(item)[0]),
         )
         board = [
-            {**row, "due": row["id"] in due_ids, "came_back": row["id"] in recurring_ids}
-            for row in ranked[:BOARD_ROWS]
+            {**view(item), "due": item["id"] in due_ids, "came_back": item["id"] in recurring_ids}
+            for item in ranked[:BOARD_ROWS]
         ]
+        open_scenes = [session for session in sessions if session.get("status") in {"active", "debriefing"}]
+        active_scene = max(open_scenes, key=lambda session: session.get("started_at", "")) if open_scenes else None
+        completed_scenes = [session for session in sessions if session.get("status") == "complete"]
+        last_scene = max(completed_scenes, key=lambda session: session.get("ended_at") or session.get("started_at", "")) if completed_scenes else None
         result = {
             "as_of": iso(moment),
             "window_days": window,
             "since": iso(since),
             "profile": profile_view(profile),
+            "onboarding": onboarding_view(profile, has_activity=last is not None),
+            "active_roleplay": {"status": active_scene["status"], "scenario": active_scene["scenario"],
+                                **session_timing(active_scene, moment)} if active_scene else None,
+            "last_roleplay": {"session_id": last_scene["id"], "scenario": last_scene["scenario"],
+                              "ended_at_local": local_iso(last_scene.get("ended_at")),
+                              "next_action": "present_debrief"} if last_scene else None,
             "last_activity_at": iso(last) if last else None,
             "last_activity_local": to_local(last).isoformat() if last else None,
             "days_since_last_activity": (local_date(moment) - local_date(last)).days if last else None,
@@ -1370,6 +2109,7 @@ class StateStore:
             "recurring_patterns": recurring[:5],
             "recurring_total": len(recurring),
             "reviews": reviews,
+            "word_reviews": word_reviews,
             "correct_uses": observed,
             "mastered": mastered,
             "mastered_labels": mastered_labels,
@@ -1377,12 +2117,15 @@ class StateStore:
             "due_now": len(due_rows),
             "due_patterns": due_rows[:5],
             "next_focus": next_focus,
+            "callback": callback,
+            "needs_label": needs_label,
             "active_patterns": len(active_rows),
             "mastered_total": sum(item.get("status") == "mastered" for item in mistakes),
             "schedule": schedule,
             "full_profile_due": full_profile_due,
             "board": board,
             "board_more": max(0, len(ranked) - len(board)),
+            "vocabulary": vocabulary_overview(words, moment),
         }
         result["card"] = render_recap_card(result)
         return result
@@ -1394,20 +2137,44 @@ class StateStore:
         scenario: str,
         *,
         focus: str | None = None,
+        minutes: int = 5,
+        input_mode: str = "text",
         at: datetime | None = None,
     ) -> dict[str, Any]:
+        scenario = SCENARIO_ALIASES.get(scenario, scenario)
         if scenario not in SCENARIOS:
             raise DeutschDNAError(f"Unknown scenario '{scenario}'. Choose from: {', '.join(sorted(SCENARIOS))}")
+        if not 1 <= minutes <= 60:
+            raise DeutschDNAError("minutes must be between 1 and 60")
+        if input_mode not in {"text", "transcript"}:
+            raise DeutschDNAError("input_mode must be text or transcript")
         moment = at or utc_now()
+        focus_pattern = None
+        if not focus:
+            due = self.due(at=moment, limit=1)
+            active = [item for item in self._mistake_document()["mistakes"] if item.get("status") == "active"]
+            target = due[0] if due else (max(active, key=lambda item: item.get("occurrences", 0)) if active else None)
+            if target:
+                focus_pattern = compact(target)
+                focus = focus_pattern["label"]
+        goal = self._profile().get("goal")
         document = self._session_document()
         session = {
             "id": f"s_{uuid.uuid4().hex[:12]}",
             "type": "roleplay",
             "scenario": scenario,
+            "input_mode": input_mode,
             "focus": focus,
+            "focus_id": focus_pattern["id"] if focus_pattern else None,
+            "learner_goal": goal,
             "status": "active",
             "started_at": iso(moment),
             "ended_at": None,
+            "target_seconds": minutes * 60,
+            "utterances": [],
+            "feedback": [],
+            "vocabulary": [],
+            "known_pattern_ids": [item["id"] for item in self._mistake_document()["mistakes"]],
             "turns": None,
             "duration_seconds": None,
             "mistake_ids": [],
@@ -1421,14 +2188,236 @@ class StateStore:
                 **SCENARIOS[scenario],
                 "feedback_policy": "Stay in character; defer ordinary corrections; give at most three in the debrief.",
                 "focus": focus,
+                "focus_pattern": focus_pattern,
+                "personal_goal": goal,
+                "target_seconds": minutes * 60,
+                "input_mode": input_mode,
+                "timing_policy": "At the next learner turn after the target, close naturally unless they want to continue. Elapsed session time is not speaking time.",
             },
         }
+
+    def roleplay_turn(
+        self, identifier: str, *, speaker: str, text: str, event_id: str | None = None, at: datetime | None = None,
+    ) -> dict[str, Any]:
+        """Store one actual utterance. There is no correction or grading on this path."""
+        if speaker not in {"learner", "partner"} or not text.strip():
+            raise DeutschDNAError("Provide a learner or partner speaker and nonempty text")
+        moment = at or utc_now()
+        document = self._session_document()
+        session = self._require_session(document, identifier)
+        utterances = session.get("utterances", [])
+        retry = next((turn for turn in utterances if event_id and turn.get("event_id") == event_id), None)
+        if retry:
+            if retry["text"] != text or retry["speaker"] != speaker:
+                raise DeutschDNAError("This turn event ID already belongs to a different utterance")
+            return {"status": "duplicate", "utterance": retry, **session_timing(session, moment)}
+        if speaker == "learner" and is_scene_end_request(text):
+            self.roleplay_stop(identifier, at=moment)
+            return {"status": "scene_ended", "control": "end_scene", **self.roleplay_show(identifier, at=moment)}
+        if session.get("status") != "active":
+            raise DeutschDNAError("This scene is closed; start a new scene to continue")
+        latest_at = utterances[-1]["at"] if utterances else session["started_at"]
+        if moment < parse_moment(latest_at):
+            raise DeutschDNAError("A turn cannot precede the scene or its previous turn")
+        if not event_id and utterances:
+            latest = utterances[-1]
+            if latest["speaker"] == speaker and latest["text"] == text and within(latest["at"], moment, DUPLICATE_EVENT_WINDOW):
+                return {"status": "duplicate", "utterance": latest, **session_timing(session, moment)}
+        turn = {"id": f"t_{uuid.uuid4().hex[:12]}", "speaker": speaker, "text": text, "at": iso(moment), "event_id": event_id}
+        session.setdefault("utterances", []).append(turn)
+        _atomic_write(self.sessions_path, document)
+        return {"status": "stored", "utterance": turn, **session_timing(session, moment)}
+
+    def roleplay_stop(self, identifier: str, *, at: datetime | None = None) -> dict[str, Any]:
+        """Freeze scene duration before the tutor spends time on the debrief."""
+        moment = at or utc_now()
+        document = self._session_document()
+        session = self._require_session(document, identifier)
+        if session.get("status") != "active":
+            return session
+        latest_at = (session.get("utterances") or [{"at": session["started_at"]}])[-1]["at"]
+        if moment < parse_moment(latest_at):
+            raise DeutschDNAError("A scene cannot end before its last turn")
+        session.update({"status": "debriefing", "ended_at": iso(moment),
+                        "duration_seconds": int((moment - parse_moment(session["started_at"])).total_seconds()),
+                        "duration_source": "elapsed", "turns": session_timing(session, moment)["learner_turns"]})
+        _atomic_write(self.sessions_path, document)
+        return session
+
+    def roleplay_vocab(
+        self, identifier: str, *, term: str, meaning: str, turn_id: str, surface: str | None = None,
+    ) -> dict[str, Any]:
+        document = self._session_document()
+        session = self._require_session(document, identifier)
+        if session.get("status") != "debriefing":
+            raise DeutschDNAError("Vocabulary is collected in the debrief after stopping the scene")
+        turn = next((item for item in session.get("utterances", []) if item["id"] == turn_id), None)
+        term, meaning, surface = term.strip(), meaning.strip(), (surface or term).strip()
+        if not term or not meaning or not surface or not turn:
+            raise DeutschDNAError("Provide a term, meaning and an actual source turn")
+        if not re.search(r"(?<!\w)" + re.escape(surface) + r"(?!\w)", turn["text"], re.IGNORECASE):
+            raise DeutschDNAError("The vocabulary surface must occur in the referenced turn")
+        entry = {"term": term, "meaning": meaning, "surface": surface, "turn_id": turn_id, "example": turn["text"]}
+        vocabulary = session.setdefault("vocabulary", [])
+        key = word_key(term)
+        deck = self._vocabulary_document()
+        stored = next((item for item in vocabulary if word_key(item["term"]) == key), None)
+        if stored is not None:
+            # A retry. When the earlier call saved the scene entry but not its card, finish that now.
+            word = next((item for item in deck["words"] if item.get("key") == key), None)
+            deck_status = "known"
+            if word is None:
+                stored_turn = next((item for item in session.get("utterances", []) if item["id"] == stored.get("turn_id")), turn)
+                word, deck_status = self._add_scene_word(deck, session, stored, stored_turn)
+                _atomic_write(self.vocabulary_path, deck)
+            return {"status": "duplicate", "vocabulary": vocabulary, "deck": deck_status,
+                    "word": word_view(word, parse_moment(turn["at"]))}
+        if len(vocabulary) >= SCENE_VOCABULARY_LIMIT:
+            raise DeutschDNAError(f"Keep at most {SCENE_VOCABULARY_LIMIT} useful vocabulary items per scene")
+        vocabulary.append(entry)
+        # Every scene word enters the deck; a word met before gets one more source, not a new schedule.
+        word, deck_status = self._add_scene_word(deck, session, entry, turn)
+        _atomic_write(self.sessions_path, document)
+        _atomic_write(self.vocabulary_path, deck)
+        return {"status": "stored", "vocabulary": vocabulary, "deck": deck_status, "word": word_view(word, parse_moment(turn["at"]))}
+
+    @staticmethod
+    def _add_scene_word(
+        deck: dict[str, Any], session: dict[str, Any], entry: dict[str, Any], turn: dict[str, Any]
+    ) -> tuple[dict[str, Any], str]:
+        """Put one scene word into the deck, with an undo snapshot that also knows its scene entry."""
+        key = word_key(entry["term"])
+        known = next((item for item in deck["words"] if item.get("key") == key), None)
+        previous = copy.deepcopy({field: value for field, value in known.items() if field != "undo"}) if known else None
+        moment = parse_moment(turn["at"])
+        source = {"session_id": session["id"], "scenario": session.get("scenario"), "turn_id": turn["id"],
+                  "surface": entry.get("surface"), "example": turn["text"], "at": turn["at"]}
+        word, deck_status = learn_word(deck["words"], term=entry["term"], meaning=entry["meaning"], source=source, moment=moment)
+        word["undo"] = {"action": "add", "at": iso(moment), "state": previous, "scene": {"session_id": session["id"], "key": key}}
+        return word, deck_status
+
+    # ---- word deck
+
+    def vocab_list(self, *, status: str = "all") -> list[dict[str, Any]]:
+        if status not in {"active", "mastered", "all"}:
+            raise DeutschDNAError("status must be active, mastered, or all")
+        words = [word for word in self._vocabulary_document()["words"] if status == "all" or word.get("status") == status]
+        return sorted(words, key=lambda word: (word.get("status") != "active", word.get("next_review") or "~", word["key"]))
+
+    def vocab_due(self, *, at: datetime | None = None, limit: int = 5) -> list[dict[str, Any]]:
+        moment = at or utc_now()
+        due = [word for word in self._vocabulary_document()["words"] if _is_due(word, moment)]
+        due.sort(key=lambda word: (word.get("next_review") or "", -int(word.get("wrong", 0)), word["key"]))
+        return due[: max(0, limit)]
+
+    @staticmethod
+    def _require_word(words: list[dict[str, Any]], identifier: str) -> dict[str, Any]:
+        word = next((item for item in words if item.get("id") == identifier), None)
+        if word is None:
+            raise DeutschDNAError(f"Unknown word ID: {identifier}")
+        return word
+
+    def vocab_grade(
+        self, identifier: str, *, result: str, prompt: str, answer: str,
+        correction: str | None = None, at: datetime | None = None,
+    ) -> tuple[dict[str, Any], str]:
+        """A word review: the learner produced the word in a sentence for a new situation."""
+        if result not in {"pass", "hard", "fail"}:
+            raise DeutschDNAError("result must be pass, hard, or fail")
+        prompt, answer = prompt.strip(), answer.strip()
+        correction = (correction or "").strip() or None
+        if not prompt or not answer:
+            raise DeutschDNAError("A word review requires the actual --prompt and the learner's --answer")
+        moment = at or utc_now()
+        document = self._vocabulary_document()
+        word = self._require_word(document["words"], identifier)
+        history = word.get("review_history") or []
+        last = history[-1] if history else None
+        if (last and (last.get("result"), last.get("prompt"), last.get("answer"), last.get("correction")) == (result, prompt, answer, correction)
+                and within(last.get("reviewed_at"), moment, DUPLICATE_EVENT_WINDOW)):
+            return word, "duplicate"
+        if not _is_due(word, moment):
+            raise DeutschDNAError("This word is not due; review it when vocab-due lists it")
+        if text_fingerprint(prompt) in word.get("seen_prompts", []):
+            raise DeutschDNAError("This word prompt was already used; ask a new situation")
+        if result == "pass" and text_fingerprint(answer) in word.get("seen_answers", []):
+            raise DeutschDNAError("This sentence was already seen; a pass needs a new sentence")
+        _snapshot(word, "grade", moment)
+        if result == "pass":
+            step = int(word.get("review_step", 0)) + 1
+            word["review_step"] = step
+            word["right"] = int(word.get("right", 0)) + 1
+            if step >= len(REVIEW_INTERVALS):
+                word.update({"status": "mastered", "next_review": None, "mastered_at": iso(moment)})
+            else:
+                word["next_review"] = iso(moment + timedelta(days=REVIEW_INTERVALS[step]))
+        elif result == "hard":
+            word["next_review"] = iso(moment + timedelta(days=REVIEW_INTERVALS[0]))
+        else:
+            word["review_step"] = 0
+            word["wrong"] = int(word.get("wrong", 0)) + 1
+            word["next_review"] = iso(moment + timedelta(days=REVIEW_INTERVALS[0]))
+        word["last_reviewed"] = iso(moment)
+        entry = {"result": result, "reviewed_at": iso(moment), "prompt": prompt, "answer": answer}
+        if correction:
+            entry["correction"] = correction
+        word["review_history"] = (history + [entry])[-HISTORY_LIMIT:]
+        for field, text in (("seen_prompts", prompt), ("seen_answers", answer), ("seen_answers", correction)):
+            remember_text(word, field, text)
+        _atomic_write(self.vocabulary_path, document)
+        return word, "graded"
+
+    def vocab_undo(self, identifier: str) -> dict[str, Any]:
+        """Revert the latest grade, or the scene addition, of one word. One level deep."""
+        document = self._vocabulary_document()
+        word = self._require_word(document["words"], identifier)
+        snapshot = word.get("undo")
+        if not snapshot:
+            raise DeutschDNAError(f"Nothing to undo for {identifier}: only its latest grade or scene addition can be undone")
+        undone = {"undone": snapshot.get("action"), "undone_at": snapshot.get("at")}
+        if snapshot.get("action") == "add":
+            scene = snapshot.get("scene") or {}
+            self._remove_scene_words(scene.get("key") or word["key"], scene.get("session_id"))
+        if snapshot.get("state") is None:
+            document["words"] = [item for item in document["words"] if item.get("id") != identifier]
+            _atomic_write(self.vocabulary_path, document)
+            return {"status": "removed", **undone, "word": word}
+        restored = snapshot["state"]
+        document["words"][document["words"].index(word)] = restored
+        _atomic_write(self.vocabulary_path, document)
+        return {"status": "undone", **undone, "word": restored}
+
+    def vocab_forget(self, identifier: str) -> dict[str, Any]:
+        """Remove a wrongly saved word from the deck and from every scene report that lists it."""
+        document = self._vocabulary_document()
+        word = self._require_word(document["words"], identifier)
+        # Scene reports first: if the second write fails, a retry still finds the card and finishes.
+        self._remove_scene_words(word["key"])
+        document["words"] = [item for item in document["words"] if item.get("id") != identifier]
+        _atomic_write(self.vocabulary_path, document)
+        return word
+
+    def roleplay_show(self, identifier: str, *, at: datetime | None = None) -> dict[str, Any]:
+        session = self._require_session(self._session_document(), identifier)
+        result = {"session": session, **session_timing(session, at or utc_now())}
+        result["debrief"] = session_debrief(
+            session, self._mistake_document()["mistakes"], self._vocabulary_document()["words"]
+        ) if session.get("status") == "complete" else None
+        # Persisting a report is not the same as showing it in a chat response.
+        # Provide ready-to-display text even to agents using the JSON default.
+        ready = result["debrief"] is not None
+        result["learner_message"] = render_roleplay_text(result) if ready else None
+        result["response_required"] = ready
+        result["next_action"] = "present_debrief" if ready else (
+            "prepare_debrief" if session.get("status") == "debriefing" else "continue_scene"
+        )
+        return result
 
     def roleplay_finish(
         self,
         identifier: str,
         *,
-        turns: int,
+        turns: int | None = None,
         duration_seconds: int | None = None,
         mistake_ids: list[str] | None = None,
         notes: str | None = None,
@@ -1436,21 +2425,39 @@ class StateStore:
     ) -> dict[str, Any]:
         moment = at or utc_now()
         document = self._session_document()
-        session = next((item for item in document["sessions"] if item.get("id") == identifier), None)
-        if not session:
-            raise DeutschDNAError(f"Unknown session ID: {identifier}")
+        session = self._require_session(document, identifier)
         if session.get("status") == "complete":
             return session
+        ended = _safe_moment(session.get("ended_at")) or moment
         started = _safe_moment(session.get("started_at"))
+        if moment < ended:
+            raise DeutschDNAError("Feedback cannot be finished before the scene ended")
+        if started and ended < started:
+            raise DeutschDNAError("A scene cannot end before it starts")
+        if session.get("utterances"):
+            if ended < parse_moment(session["utterances"][-1]["at"]):
+                raise DeutschDNAError("A scene cannot end before its last turn")
+            count = session_timing(session, ended)["learner_turns"]
+            if turns is not None and turns != count:
+                raise DeutschDNAError("The supplied turn count disagrees with the recorded learner turns")
+            if duration_seconds is not None:
+                raise DeutschDNAError("Recorded scenes use elapsed time; speaking duration is not measured")
+            turns = count
+        elif turns is None:
+            turns = 0
+        duration_source = "provided" if duration_seconds is not None else "elapsed"
         if duration_seconds is None and started is not None:
-            duration_seconds = max(0, int((moment - started).total_seconds()))
+            duration_seconds = max(0, int((ended - started).total_seconds()))
+        linked = [item["mistake_id"] for item in session.get("feedback", [])]
         session.update(
             {
                 "status": "complete",
-                "ended_at": iso(moment),
+                "ended_at": iso(ended),
+                "finished_at": iso(moment),
                 "turns": max(0, turns),
                 "duration_seconds": max(0, duration_seconds) if duration_seconds is not None else None,
-                "mistake_ids": list(dict.fromkeys(mistake_ids or [])),
+                "duration_source": duration_source,
+                "mistake_ids": list(dict.fromkeys((mistake_ids or []) + linked)),
                 "notes": notes,
             }
         )
@@ -1498,114 +2505,46 @@ def analyze_correction(original: str, corrected: str) -> dict[str, Any]:
     }
 
 
-def is_local_endpoint(endpoint: str) -> bool:
-    try:
-        host = urllib.parse.urlparse(endpoint).hostname
-    except ValueError:
-        return False
-    return bool(host) and (host in LOCAL_HOSTS or host.endswith(".localhost"))
-
-
-def _language_tool_check(endpoint: str, text: str, language: str, timeout: float) -> dict[str, Any]:
-    payload = urllib.parse.urlencode({"text": text, "language": language}).encode("utf-8")
-    request = urllib.request.Request(
-        endpoint,
-        data=payload,
-        headers={"Content-Type": "application/x-www-form-urlencoded", "User-Agent": "DeutschDNA/1.1"},
-        method="POST",
-    )
-    with urllib.request.urlopen(request, timeout=timeout) as response:
-        result = json.loads(response.read().decode("utf-8"))
-    matches = result.get("matches", [])
-    if not isinstance(matches, list):
-        raise DeutschDNAError("LanguageTool returned an invalid matches value")
-    return {
-        "count": len(matches),
-        "matches": [
-            {
-                "message": item.get("message"),
-                "offset": item.get("offset"),
-                "length": item.get("length"),
-                "rule_id": (item.get("rule") or {}).get("id"),
-                "replacements": [replacement.get("value") for replacement in item.get("replacements", [])[:3]],
-            }
-            for item in matches
-        ],
-    }
-
-
-def verify_correction(
-    original: str,
-    corrected: str,
-    *,
-    endpoint: str,
-    language: str = "de-DE",
-    timeout: float = 2.5,
-    allow_remote: bool = False,
-) -> dict[str, Any]:
+def minimality_view(original: str, corrected: str) -> dict[str, Any]:
+    """Whether a correction changed only what grammar required; agents reconsider a `possible_rewrite`."""
     analysis = analyze_correction(original, corrected)
-    if not is_local_endpoint(endpoint) and not allow_remote:
-        return {
-            "validator_status": "unavailable",
-            "validator": "LanguageTool",
-            "endpoint": endpoint,
-            "reason": (
-                "Remote validator endpoint blocked so learner text stays on this machine. "
-                "Pass --allow-remote or set DEUTSCHDNA_ALLOW_REMOTE_VALIDATOR=1 to opt in."
-            ),
-            "analysis": analysis,
-        }
-    try:
-        original_check = _language_tool_check(endpoint, original, language, timeout)
-        corrected_check = _language_tool_check(endpoint, corrected, language, timeout)
-    except (urllib.error.URLError, urllib.error.HTTPError, TimeoutError, OSError, json.JSONDecodeError, DeutschDNAError) as exc:
-        return {
-            "validator_status": "unavailable",
-            "validator": "LanguageTool",
-            "endpoint": endpoint,
-            "reason": str(exc),
-            "analysis": analysis,
-        }
-
-    original_rules = {match["rule_id"] for match in original_check["matches"] if match["rule_id"]}
-    corrected_rules = {match["rule_id"] for match in corrected_check["matches"] if match["rule_id"]}
-    new_rules = sorted(corrected_rules - original_rules)
-    resolved_rules = sorted(original_rules - corrected_rules)
-    changed_fragments = {
-        normalized(" ".join(change["corrected_tokens"]))
-        for change in analysis["changes"]
-        if change["corrected_tokens"]
-    }
-    suggested_replacements = {
-        normalized(replacement)
-        for match in original_check["matches"]
-        for replacement in match["replacements"]
-        if replacement
-    }
-    replacement_supported = any(
-        suggestion == fragment or suggestion in fragment or fragment in suggestion
-        for suggestion in suggested_replacements
-        for fragment in changed_fragments
-    )
-    if original_check["count"] > 0 and corrected_check["count"] == 0 and replacement_supported:
-        status = "verified"
-    elif original_check["count"] > corrected_check["count"] and not new_rules:
-        status = "supported"
-    elif original_check["count"] == 0:
-        status = "no_finding"
-    else:
-        status = "uncertain"
     return {
-        "validator_status": status,
-        "validator": "LanguageTool",
-        "endpoint": endpoint,
-        "original": original_check,
-        "corrected": corrected_check,
-        "resolved_rule_ids": resolved_rules,
-        "new_rule_ids": new_rules,
-        "replacement_supported": replacement_supported,
-        "analysis": analysis,
+        "status": analysis["minimality_status"],
+        "changed_token_ratio": analysis["changed_token_ratio"],
+        "changes": analysis["changes"],
     }
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"\w+", unicodedata.normalize("NFKC", text).casefold()))
+
+
+def variety_note(mistake: dict[str, Any], *, prompt: str, answer: str) -> dict[str, Any] | None:
+    """Flag a task or answer that reuses an earlier sentence frame; exact reuse is already rejected.
+
+    `Die Planung ist wichtig.` after `Die Einladung ist wichtig.` passes the exact-text check
+    but tests the same frame again, not transfer to a new situation.
+    """
+    earlier: list[tuple[str, str, str | None]] = []
+    for entry in mistake.get("review_history", []) + mistake.get("coaching_history", []):
+        stamp = entry.get("reviewed_at") or entry.get("at")
+        earlier.extend((field, entry[field], stamp) for field in ("prompt", "answer") if entry.get(field))
+    for example in mistake.get("examples", []):
+        earlier.extend(("answer", example[field], example.get("seen_at")) for field in ("original", "corrected") if example.get(field))
+    for entry in mistake.get("correct_use_history", []):
+        if entry.get("context"):
+            earlier.append(("answer", entry["context"], entry.get("observed_at")))
+    current = {"prompt": _words(prompt), "answer": _words(answer)}
+    best = None
+    for field, text, stamp in earlier:
+        words = current[field]
+        if len(words) < VARIETY_MIN_WORDS:
+            continue
+        other = _words(text)
+        similarity = len(words & other) / len(words | other)
+        if similarity >= VARIETY_WARNING_THRESHOLD and (best is None or similarity > best["similarity"]):
+            best = {"field": field, "similar_to": text, "at_local": local_iso(stamp), "similarity": round(similarity, 2)}
+    return best
 
 
 # --------------------------------------------------------------------------- text rendering
@@ -1616,12 +2555,22 @@ def render_bar(percent: int, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
-def _plural(count: int, singular: str, plural: str | None = None) -> str:
-    return f"{count} {singular if count == 1 else (plural or singular + 's')}"
+def _plural(count: int, singular: str, plural: str) -> str:
+    return f"{count} {singular if count == 1 else plural}"
 
 
-def _display_name(profile: dict[str, Any]) -> str:
-    return profile.get("name") or "Learner"
+def _in_a_row(days: int) -> str:
+    return f"{_plural(days, 'Tag', 'Tage')} in Folge"
+
+
+def _heading(profile: dict[str, Any]) -> list[str]:
+    """The card title: the learner's name and level only when they gave them."""
+    parts = ["DeutschDNA"]
+    if profile.get("name"):
+        parts.append(profile["name"])
+    if profile.get("level") and profile["level"] != "unspecified":
+        parts.append(profile["level"])
+    return parts
 
 
 def _label(category: str) -> str:
@@ -1632,7 +2581,7 @@ def _join_limited(items: list[str], limit: int, total: int | None = None) -> str
     shown = " · ".join(items[:limit])
     hidden = (len(items) if total is None else total) - min(limit, len(items))
     if hidden > 0:
-        shown += f" · +{hidden} more"
+        shown += f" · +{hidden} weitere"
     return shown
 
 
@@ -1640,10 +2589,11 @@ def _cluster_detail(cluster: dict[str, Any], recent_total: int) -> str:
     recent_errors = cluster.get("recent_errors", 0)
     if recent_errors and recent_total:
         return (
-            f"{recent_errors} of your {recent_total} mistakes in {CLUSTER_WINDOW.days} days · "
-            f"{_plural(cluster.get('recent_patterns', 0), 'related pattern')}"
+            f"{recent_errors} von {recent_total} Fehlern der letzten {CLUSTER_WINDOW.days} Tage · "
+            f"{_plural(cluster.get('recent_patterns', 0), 'verwandtes Muster', 'verwandte Muster')}"
         )
-    return f"{_plural(len(cluster['patterns']), 'related pattern')} · {_plural(cluster['occurrences'], 'error')}"
+    return (f"{_plural(len(cluster['patterns']), 'verwandtes Muster', 'verwandte Muster')} · "
+            f"{_plural(cluster['occurrences'], 'Fehler', 'Fehler')}")
 
 
 def _score(accuracy: int, is_new: bool) -> str:
@@ -1652,93 +2602,101 @@ def _score(accuracy: int, is_new: bool) -> str:
 
 
 def render_summary_text(summary: dict[str, Any]) -> str:
-    profile = summary["profile"]
-    level = profile.get("level")
-    title = f"DeutschDNA · {_display_name(profile)}"
-    if level and level != "unspecified":
-        title += f" · {level}"
     lines = [
-        title,
+        " · ".join(_heading(summary["profile"])),
         (
-            f"{_plural(summary['total_patterns'], 'pattern')} · {summary['mastered_patterns']} mastered · "
-            f"{summary['errors_total']} wrong · {summary['correct_total']} right · "
-            f"streak {_plural(summary['streak_days'], 'day')} · {summary['due_now']} due"
+            f"{_plural(summary['total_patterns'], 'Muster', 'Muster')} · {summary['mastered_patterns']} gemeistert · "
+            f"{summary['errors_total']}× falsch · {summary['correct_total']}× richtig · "
+            f"{_in_a_row(summary['streak_days'])} · {summary['due_now']} fällig"
         ),
         "",
     ]
     categories = summary["categories"]
     if not categories:
-        lines.append("No mistakes recorded yet. Your DNA forms as you write.")
-        return "\n".join(lines)
+        lines.append("Noch keine Fehler gespeichert. Deine DNA entsteht, während du schreibst.")
+        return "\n".join(lines + _vocabulary_lines(summary))
     for category in sorted(categories, key=category_rank):
         bucket = categories[category]
         line = (
             f"{_label(category):<16}{_score(bucket['accuracy_percent'], bucket.get('new', False))}   "
-            f"{_plural(bucket['patterns'], 'pattern'):<10} · {bucket['mastered']} mastered · "
-            f"{bucket['errors']} wrong · {bucket['correct']} right"
+            f"{_plural(bucket['patterns'], 'Muster', 'Muster'):<9} · {bucket['mastered']} gemeistert · "
+            f"{bucket['errors']}× falsch · {bucket['correct']}× richtig"
         )
         if bucket["weak"]:
-            line += "   ← weak"
+            line += "   ← schwach"
         lines.append(line)
     clusters = summary["clusters"]
     recent_total = summary.get("recent_errors_total", 0)
     if clusters:
         top = clusters[0]
         lines.append("")
-        lines.append(f"Root cause: {_label(top['category'])} · {_cluster_detail(top, recent_total)}")
+        lines.append(f"Ursache: {_label(top['category'])} · {_cluster_detail(top, recent_total)}")
         for name in top.get("labels", top["patterns"])[:4]:
             lines.append(f"  → {name}")
         if len(top["patterns"]) > 4:
-            lines.append(f"  → +{len(top['patterns']) - 4} more")
+            lines.append(f"  → +{len(top['patterns']) - 4} weitere")
         for cluster in clusters[1:2]:
-            lines.append(f"Also: {_label(cluster['category'])} · {_cluster_detail(cluster, recent_total)}")
+            lines.append(f"Außerdem: {_label(cluster['category'])} · {_cluster_detail(cluster, recent_total)}")
     weakest = [row for row in summary["weakest_patterns"] if not row.get("new")][:3]
     if weakest:
         lines.append("")
-        lines.append("Weakest patterns")
+        lines.append("Schwächste Muster")
         width = max(len(row["label"]) for row in weakest)
         for row in weakest:
             lines.append(
                 f"  {row['label']:<{width}}  {row['accuracy_percent']:>3}%  "
-                f"{row['occurrences']} wrong · {row['right']} right · step {row['review_step']}/{row['review_steps_total']}"
+                f"{row['occurrences']}× falsch · {row['right']}× richtig · Stufe {row['review_step']}/{row['review_steps_total']}"
             )
     if summary["due_patterns"]:
         names = [row["label"] for row in summary["due_patterns"]]
         lines.append("")
-        lines.append("Due now: " + _join_limited(names, 3, summary["due_now"]))
-    return "\n".join(lines)
+        lines.append("Jetzt fällig: " + _join_limited(names, 3, summary["due_now"]))
+    return "\n".join(lines + _vocabulary_lines(summary))
 
 
 def render_recap_text(recap: dict[str, Any]) -> str:
-    name = _display_name(recap["profile"])
+    name = recap["profile"].get("name")
     gap = recap["days_since_last_activity"]
     if gap is None:
-        return f"Willkommen, {name}.\nNo history yet. Write a few sentences in German and your DeutschDNA starts forming."
-    when = "today" if gap == 0 else ("yesterday" if gap == 1 else f"{gap} days ago")
+        return (f"Willkommen, {name}!" if name else "Willkommen!") + (
+            "\nNoch keine Einträge. Schreib ein paar Sätze auf Deutsch, dann entsteht deine DeutschDNA."
+        )
+    when = "heute" if gap == 0 else ("gestern" if gap == 1 else f"vor {gap} Tagen")
     errors = recap["errors"]
     reviews = recap["reviews"]
+    word_reviews = recap.get("word_reviews") or {"total": 0}
+    practice = (
+        f"Letzte {recap['window_days']} Tage: {_plural(errors['total'], 'Fehler', 'Fehler')} "
+        f"({errors['new_patterns']} neu, {errors['recurrences']} wiederholt) · "
+        f"{_plural(reviews['total'], 'Wiederholung', 'Wiederholungen')} ({reviews['pass']} bestanden) · "
+    )
+    if word_reviews["total"]:
+        practice += (f"{_plural(word_reviews['total'], 'Wortwiederholung', 'Wortwiederholungen')} "
+                     f"({word_reviews['pass']} bestanden) · ")
+    practice += (
+        f"{_plural(recap['correct_uses'], 'richtige Verwendung', 'richtige Verwendungen')} · "
+        f"{_plural(recap['roleplays']['count'], 'Rollenspiel', 'Rollenspiele')}"
+    )
     lines = [
-        f"Willkommen zurück, {name}.",
-        f"Last practice: {when} · streak {_plural(recap['streak_days'], 'day')}",
-        (
-            f"Last {recap['window_days']} days: {_plural(errors['total'], 'mistake')} "
-            f"({errors['new_patterns']} new, {errors['recurrences']} repeated) · "
-            f"{_plural(reviews['total'], 'review')} ({reviews['pass']} passed) · "
-            f"{_plural(recap['correct_uses'], 'correct use')} · {_plural(recap['roleplays']['count'], 'roleplay')}"
-        ),
+        f"Willkommen zurück, {name}." if name else "Willkommen zurück.",
+        f"Zuletzt geübt: {when} · {_in_a_row(recap['streak_days'])}",
+        practice,
     ]
     if recap["recurring_patterns"]:
         names = [
             row.get("label", row["pattern"]) + (f" ×{row['count']}" if row["count"] > 1 else "")
             for row in recap["recurring_patterns"]
         ]
-        lines.append("Came back: " + _join_limited(names, 2, recap.get("recurring_total")))
+        lines.append("Wieder da: " + _join_limited(names, 2, recap.get("recurring_total")))
     if recap["mastered"]:
-        lines.append("Mastered: " + _join_limited(recap.get("mastered_labels") or recap["mastered"], 3))
+        lines.append("Gemeistert: " + _join_limited(recap.get("mastered_labels") or recap["mastered"], 3))
+    words_due = (recap.get("vocabulary") or {}).get("due_now")
     if recap["due_now"]:
-        lines.append(f"{_plural(recap['due_now'], 'mistake')} due for review · 5-minute challenge?")
+        lines.append(f"{_plural(recap['due_now'], 'Fehler', 'Fehler')} zum Wiederholen fällig · 5-Minuten-Challenge?")
     elif recap["next_focus"]:
-        lines.append(f"Nothing due. Weakest right now: {recap['next_focus']['label']}")
+        lines.append(f"{'Keine Fehler' if words_due else 'Nichts'} fällig. Gerade am schwächsten: {recap['next_focus']['label']}")
+    if words_due:
+        lines.append(f"{_plural(words_due, 'Wort', 'Wörter')} aus deinen Szenen zum Wiederholen fällig")
     return "\n".join(lines)
 
 
@@ -1770,16 +2728,32 @@ def _when_due(row: dict[str, Any], now_local: datetime) -> str:
 
 def render_recap_card(recap: dict[str, Any]) -> str:
     """The session header and a board of the patterns in progress. Every value comes from the recap."""
-    profile = recap["profile"]
-    head = ["DeutschDNA", _display_name(profile)]
-    level = profile.get("level")
-    if level and level != "unspecified":
-        head.append(level)
+    head = _heading(recap["profile"])
     if recap.get("last_activity_at") is None:
         return " · ".join(head) + "\nNoch keine Einträge. Schreib ein paar Sätze auf Deutsch, dann entsteht deine DNA."
+    return "\n".join(_recap_card_lines(recap, head) + _vocabulary_lines(recap))
+
+
+def _vocabulary_lines(result: dict[str, Any]) -> list[str]:
+    """One line about the word deck under a card, or nothing while the deck is empty."""
+    overview = result.get("vocabulary") or {}
+    if not overview.get("total"):
+        return []
+    parts = [f"Wortschatz: {_plural(overview['total'], 'Wort', 'Wörter')}"]
+    if overview["due_now"]:
+        parts.append(f"{overview['due_now']} fällig")
+    elif overview.get("next_local"):
+        now_local = to_local(parse_moment(result["as_of"]))
+        parts.append(f"nächste Wiederholung {_when_due({'next_review_local': overview['next_local']}, now_local)}")
+    if overview["mastered"]:
+        parts.append(f"{overview['mastered']} gemeistert")
+    return ["", " · ".join(parts)]
+
+
+def _recap_card_lines(recap: dict[str, Any], head: list[str]) -> list[str]:
     streak = recap["streak_days"]
     if streak:
-        head.append(f"{streak} {'Tag' if streak == 1 else 'Tage'} in Folge")
+        head.append(_in_a_row(streak))
     else:
         head.append(f"zuletzt vor {recap['days_since_last_activity']} Tagen")
     total = recap["active_patterns"] + recap["mastered_total"]
@@ -1801,22 +2775,23 @@ def render_recap_card(recap: dict[str, Any]) -> str:
     elif recap["mastered_total"]:
         lines.append("")
         lines.append("Alles gemeistert ★ Schreib etwas Neues, dann suche ich die nächste Baustelle.")
-    return "\n".join(lines)
+    return lines
 
 
 def render_due_text(result: dict[str, Any]) -> str:
     if not result["mistakes"]:
-        return "Nothing due right now."
-    lines = [f"Due now: {result['count']}"]
+        return "Gerade ist nichts fällig."
+    lines = [f"Jetzt fällig: {result['count']}"]
     for index, mistake in enumerate(result["mistakes"], start=1):
-        row = compact(mistake)
-        lines.append(f"{index}. {row['label']}  [{row['category']}]  {row['id']}")
-        lines.append(f"   Rule: {row['rule']}")
+        # Accepts both full records (--verbose) and the compact rows agents get by default.
+        row = compact(mistake) if "examples" in mistake else mistake
+        lines.append(f"{index}. {row['label']}  [{_label(row['category'])}]  {row['id']}")
+        lines.append(f"   Regel: {row['rule']}")
         example = row["last_example"]
         if example and example.get("original"):
-            lines.append(f"   Last: {example['original']} → {example.get('corrected') or '?'}")
+            lines.append(f"   Zuletzt: {example['original']} → {example.get('corrected') or '?'}")
         lines.append(
-            f"   {row['occurrences']} wrong · {row['right']} right · step {row['review_step']}/{row['review_steps_total']}"
+            f"   {row['occurrences']}× falsch · {row['right']}× richtig · Stufe {row['review_step']}/{row['review_steps_total']}"
         )
     return "\n".join(lines)
 
@@ -1837,16 +2812,24 @@ def render_list_text(result: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+def _event(marker: str, word: str, text: str = "") -> str:
+    return f"{marker} {word:<14} {text}".rstrip()
+
+
 def render_show_text(result: dict[str, Any]) -> str:
-    """The journey of one pattern: first mistake, every review, real-life use, mastery."""
+    """The journey of one pattern: first mistake, every review, real-life use, mastery.
+
+    Learner-facing, so every line is German; the stored English rule stays in the JSON.
+    """
     mistake = result["mistake"]
     row = compact(mistake)
     mastered = mistake.get("status") == "mastered"
-    lines = [
-        f"{row['label']} · {_label(mistake['category'])} · {'mastered' if mastered else 'learning'}",
-        f"Rule: {mistake.get('rule')}",
-        "",
-    ]
+    lines = [f"{row['label']} · {_label(mistake['category'])} · {'gemeistert' if mastered else 'wird geübt'}", ""]
+    first = mistake.get("first_example")
+    if first:
+        label = "Erster Fehler" if first.get("seen_at") == mistake.get("first_seen") else "Frühester erhaltener Fehler"
+        lines.append(f"{label} · {(local_iso(first.get('seen_at')) or '')[:10]}: {first.get('original')}")
+        lines.append("")
     events: list[tuple[str, int, str]] = []
     failed_review_stamps = set()
     for example in mistake.get("examples", []):
@@ -1855,9 +2838,9 @@ def render_show_text(result: dict[str, Any]) -> str:
         pair = f"{original} → {corrected or '?'}" if original else ""
         if example.get("context") == REVIEW_CONTEXT:
             failed_review_stamps.add(stamp)
-            events.append((stamp, 0, f"✗ review   {pair}".rstrip()))
+            events.append((stamp, 0, _event("✗", "Wiederholung", pair)))
         else:
-            events.append((stamp, 0, f"✗ wrote    {pair}".rstrip()))
+            events.append((stamp, 0, _event("✗", "Fehler", pair)))
     for entry in mistake.get("review_history", []):
         if entry.get("source", "review") != "review":
             continue
@@ -1865,30 +2848,128 @@ def render_show_text(result: dict[str, Any]) -> str:
         answer = entry.get("answer") or ""
         outcome = entry.get("result")
         if outcome == "pass":
-            events.append((stamp, 1, f"✓ review   {answer or 'passed'}"))
+            events.append((stamp, 1, _event("✓", "Wiederholung", answer or "bestanden")))
         elif outcome == "hard":
-            events.append((stamp, 1, f"~ review   {answer + ' ' if answer else ''}(after a hint)"))
+            support_label = "nach einem Hinweis" if entry.get("hint") else "mit Zögern"
+            events.append((stamp, 1, _event("~", "Wiederholung", f"{answer + ' ' if answer else ''}({support_label})")))
         elif outcome == "fail" and stamp not in failed_review_stamps:
-            events.append((stamp, 1, "✗ review   failed"))
+            events.append((stamp, 1, _event("✗", "Wiederholung", "nicht bestanden")))
     for entry in mistake.get("correct_use_history", []):
-        events.append((entry.get("observed_at") or "", 2, f"✓ used     {entry.get('context') or 'correctly, unprompted'}"))
+        events.append((entry.get("observed_at") or "", 2, _event("✓", "frei benutzt", entry.get("context") or "")))
+    supported_reviews = {
+        (entry.get("reviewed_at"), entry.get("prompt"))
+        for entry in mistake.get("review_history", []) if entry.get("hint")
+    }
+    practice_labels = {
+        "independent": ("✓", "ohne Hilfe"), "assisted": ("~", "mit Hinweis"),
+        "shown": ("→", "Lösung gezeigt"), "miss": ("~", "noch offen"),
+    }
+    for entry in mistake.get("coaching_history", []):
+        if (entry.get("at"), entry.get("prompt")) not in supported_reviews:
+            events.append((entry.get("at") or "", 2, _event(*practice_labels[entry["outcome"]], entry["answer"])))
     for field, marker in (
-        ("previously_mastered_at", "★ mastered"),
-        ("mastered_at", "★ mastered"),
-        ("reactivated_at", "↺ came back after mastery"),
+        ("previously_mastered_at", "★ gemeistert"),
+        ("mastered_at", "★ gemeistert"),
+        ("reactivated_at", "↺ nach dem Meistern zurück"),
     ):
         if mistake.get(field):
             events.append((mistake[field], 3, marker))
     events.sort(key=lambda item: (item[0], item[1]))
     hidden = max(0, len(events) - TIMELINE_LIMIT)
     if hidden:
-        lines.append(f"… {_plural(hidden, 'earlier event')}")
+        lines.append(f"… {_plural(hidden, 'früheres Ereignis', 'frühere Ereignisse')}")
     for stamp, _, text in events[hidden:]:
         lines.append(f"{(local_iso(stamp) or stamp)[:10]}  {text}")
-    progress = "mastered" if mastered else f"step {row['review_step']}/{row['review_steps_total']}"
+    support = mistake.get("helpful_hint")
+    if support:
+        lines.extend(["", f"Hilfreicher Hinweis ({support['strategy']}): {support['hint']}"])
+    proof = learning_proof_view(mistake.get("learning_proof"))
+    if proof:
+        before, after = proof["with_help"], proof["independent"]
+        source = "frei geschrieben" if after["source"] == "spontaneous" else "neue Aufgabe"
+        lines.extend([
+            f"Mit Hilfe · {before['at_local'][:10]}: {before['answer']}",
+            f"Ohne Hilfe · {after['at_local'][:10]} ({source}): {after['answer']}",
+        ])
+    progress = "gemeistert" if mastered else f"Stufe {row['review_step']}/{row['review_steps_total']}"
     score = "neu" if row["new"] else f"{render_bar(row['accuracy_percent'])} {row['accuracy_percent']}%"
     lines.append("")
-    lines.append(f"{score} · {row['occurrences']} wrong · {row['right']} right · {progress}")
+    lines.append(f"{score} · {row['occurrences']}× falsch · {row['right']}× richtig · {progress}")
+    return "\n".join(lines)
+
+
+def render_roleplay_text(result: dict[str, Any]) -> str:
+    debrief = result.get("debrief")
+    if not debrief:
+        if result.get("session", {}).get("status") == "debriefing":
+            return "Die Szene ist beendet. Die Auswertung wird vorbereitet."
+        return "Die Szene läuft noch. Sag Bescheid, wenn du aufhören möchtest."
+    seconds = debrief["duration_seconds"]
+    duration = f"{seconds // 60}m {seconds % 60:02d}s" if seconds is not None else "unbekannt"
+    timing_label = "Dauer der Szene" if debrief["duration_source"] == "elapsed" else "Angegebene Dauer"
+    lines = ["AUSWERTUNG DER SZENE", f"{debrief['scenario'].capitalize()} · {timing_label}: {duration}",
+             f"Deine Antworten: {debrief['learner_turns']}", "", f"Wichtige Korrekturen: {len(debrief['corrections'])}"]
+    for index, item in enumerate(debrief["corrections"], 1):
+        example = item["example"]
+        lines.extend([f"{index}. {item['label']}", f"   {example['original']}", f"   → {example['corrected']}"])
+    if not debrief["corrections"]:
+        lines.append("Keine bestätigten Fehler für diese Szene gespeichert.")
+    if debrief["vocabulary"]:
+        lines.extend(["", "Wortschatz aus dieser Szene"])
+        lines.extend(f"{item['term']} — {item['meaning']}" + (" · schon gemeistert" if item.get("review") == "mastered" else "")
+                     for item in debrief["vocabulary"])
+        reviewed = [item for item in debrief["vocabulary"] if item.get("review") == "active"]
+        if reviewed:
+            everyone = len(reviewed) == len(debrief["vocabulary"])
+            lines.append(f"{'Diese' if everyone else 'Die übrigen'} Wörter kommen in deiner Wiederholung in neuen Sätzen zurück.")
+    if debrief["recurring"]:
+        lines.extend(["", "Wiederkehrende Muster"])
+        for item in debrief["recurring"]:
+            count = item["session_occurrences"]
+            prior = " · aus früheren Übungen bekannt" if item["previously_tracked"] else ""
+            lines.append(f"{item['label']} {'█' * min(count, 10)} {count}× in dieser Szene{prior}")
+    return "\n".join(lines)
+
+
+def _word_when(word: dict[str, Any], now_local: datetime) -> str:
+    return "★ gemeistert" if word.get("status") == "mastered" else _when_due(word, now_local)
+
+
+def render_vocab_list_text(result: dict[str, Any]) -> str:
+    """The word deck: each word with its meaning, ladder, and next review."""
+    overview = result["overview"]
+    if not overview["total"]:
+        return "Noch keine Wörter im Wortschatz. Die Wörter aus deinen Rollenspielen landen hier."
+    head = [f"Wortschatz · {_plural(overview['total'], 'Wort', 'Wörter')}", f"{overview['due_now']} fällig"]
+    if overview["mastered"]:
+        head.append(f"{overview['mastered']} gemeistert")
+    lines = [" · ".join(head)]
+    words = result["words"]
+    if words:
+        now_local = to_local(parse_moment(result["as_of"]))
+        term_width = min(LABEL_WIDTH, max(len(word["term"]) for word in words))
+        meaning_width = min(LABEL_WIDTH, max(len(word["meaning"]) for word in words))
+        lines.append("")
+        for word in words:
+            step = int(word.get("review_step", 0))
+            lines.append(
+                f"{_fit(word['term'], term_width):<{term_width}}  {_fit(word['meaning'], meaning_width):<{meaning_width}}  "
+                f"{_ladder(step)} {step}/{len(REVIEW_INTERVALS)}   {_word_when(word, now_local)}"
+            )
+    return "\n".join(lines)
+
+
+def render_vocab_due_text(result: dict[str, Any]) -> str:
+    if not result["words"]:
+        return "Gerade sind keine Wörter fällig."
+    lines = [f"Fällige Wörter: {result['count']}"]
+    for index, word in enumerate(result["words"], start=1):
+        lines.append(f"{index}. {word['term']} — {word['meaning']}  {word['id']}")
+        source = word.get("source") or ((word.get("sources") or [None])[-1])
+        if source and source.get("example"):
+            scenario = (source.get("scenario") or "").capitalize()
+            lines.append(f"   Aus der Szene{f' ({scenario})' if scenario else ''}: „{source['example']}“")
+        lines.append(f"   Stufe {int(word.get('review_step', 0))}/{len(REVIEW_INTERVALS)} · {int(word.get('wrong', 0))}× falsch")
     return "\n".join(lines)
 
 
@@ -1898,6 +2979,10 @@ TEXT_RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {
     "due": render_due_text,
     "list": render_list_text,
     "show": render_show_text,
+    "roleplay-show": render_roleplay_text,
+    "roleplay-finish": render_roleplay_text,
+    "vocab-list": render_vocab_list_text,
+    "vocab-due": render_vocab_due_text,
 }
 CARD_RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {"recap": render_recap_card}
 
@@ -1918,11 +3003,23 @@ def _configure_streams() -> None:
 
 
 def _print_json(value: Any, *, stream: Any = None) -> None:
-    print(json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True), file=stream or sys.stdout)
+    """Indented in a terminal; compact when piped to an agent, where whitespace only costs tokens."""
+    target = stream or sys.stdout
+    isatty = getattr(target, "isatty", None)
+    if isatty is not None and isatty():
+        text = json.dumps(value, ensure_ascii=False, indent=2, sort_keys=True)
+    else:
+        text = json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+    print(text, file=target)
 
 
 def _add_format(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--format", choices=("json", "text"), default="json", help="json for agents, text for humans")
+
+
+def _add_verbose(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--verbose", action="store_true",
+                        help="Full pattern records and detailed rows instead of the compact agent view")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -1934,6 +3031,11 @@ def build_parser() -> argparse.ArgumentParser:
     init_parser.add_argument("--name")
     init_parser.add_argument("--native-language")
     init_parser.add_argument("--level")
+    init_parser.add_argument("--goal", help="The learner's stated real-life goal; empty string clears it")
+    init_parser.add_argument("--explanation-language", help="Language for onboarding and explanations, independent of native language")
+    init_parser.add_argument("--starting-point", choices=sorted(STARTING_POINTS), help="Learner's starting preference; never sets a CEFR level")
+    init_parser.add_argument("--welcome-shown", action="store_true", help="Remember that the short introduction was shown")
+    init_parser.add_argument("--onboarding-complete", action="store_true", help="Mark the first actual German practice as completed, even without errors")
     init_parser.add_argument("--at", help="ISO-8601 time, primarily for deterministic integrations")
 
     record_parser = subparsers.add_parser("record", help="Record or recur a root-cause mistake pattern")
@@ -1945,31 +3047,49 @@ def build_parser() -> argparse.ArgumentParser:
     record_parser.add_argument("--rule", help="One-line rule the learner should remember")
     record_parser.add_argument("--label", help="Short German name shown to the learner, e.g. 'hätte gern (höflich)'")
     record_parser.add_argument("--context")
-    record_parser.add_argument("--verification-status", default="not_checked", choices=sorted(VERIFICATION_STATUSES))
     record_parser.add_argument("--event-id", help="Idempotency key; identical calls without one are deduplicated for 30 minutes")
+    record_parser.add_argument("--session-id", help="Scene stopped for debrief; requires --turn-id")
+    record_parser.add_argument("--turn-id", help="Actual learner turn containing the original sentence")
     record_parser.add_argument("--at", help="ISO-8601 event time")
+    _add_verbose(record_parser)
 
     observe_parser = subparsers.add_parser("observe", help="Log a correct, unprompted use of tracked patterns")
     observe_parser.add_argument("mistake_ids", nargs="+")
     observe_parser.add_argument("--context", help="The learner's phrase; also used to deduplicate retries")
     observe_parser.add_argument("--at", help="ISO-8601 event time")
 
+    coach_parser = subparsers.add_parser("coach", help="Remember guided or independent practice without changing the review schedule")
+    coach_parser.add_argument("mistake_id")
+    coach_parser.add_argument("--outcome", required=True, choices=("independent", "assisted", "shown", "miss"))
+    coach_parser.add_argument("--prompt", required=True)
+    coach_parser.add_argument("--answer", required=True)
+    coach_parser.add_argument("--strategy", help="The teaching approach actually used")
+    coach_parser.add_argument("--hint", help="The exact help given, including the answer if it was shown")
+    coach_parser.add_argument("--at", help="ISO-8601 event time")
+    _add_verbose(coach_parser)
+
     due_parser = subparsers.add_parser("due", help="List mistake patterns due for review")
     due_parser.add_argument("--limit", type=int, default=5)
     due_parser.add_argument("--at", help="ISO-8601 comparison time")
     _add_format(due_parser)
+    _add_verbose(due_parser)
 
     grade_parser = subparsers.add_parser("grade", help="Grade a mistake review")
     grade_parser.add_argument("mistake_id")
     grade_parser.add_argument("--result", required=True, choices=("pass", "hard", "fail"))
     grade_parser.add_argument("--answer", help="The learner's answer; kept in the pattern's timeline")
     grade_parser.add_argument("--correction", help="Minimal correction of a failed answer")
+    grade_parser.add_argument("--prompt", help="The actual new situation used for this review (required)")
+    grade_parser.add_argument("--strategy", help="Teaching approach used for a hard or failed review")
+    grade_parser.add_argument("--hint", help="The exact help given; hinted answers cannot pass")
     grade_parser.add_argument("--at", help="ISO-8601 review time")
+    _add_verbose(grade_parser)
 
     list_parser = subparsers.add_parser("list", help="List tracked patterns compactly")
     list_parser.add_argument("--status", choices=("active", "mastered", "all"), default="active")
     list_parser.add_argument("--category", choices=CATEGORY_ORDER)
     _add_format(list_parser)
+    _add_verbose(list_parser)
 
     show_parser = subparsers.add_parser("show", help="Show one pattern with its full history")
     show_parser.add_argument("mistake_id")
@@ -1977,14 +3097,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     forget_parser = subparsers.add_parser("forget", help="Delete a wrongly recorded pattern")
     forget_parser.add_argument("mistake_id")
+    _add_verbose(forget_parser)
 
-    undo_parser = subparsers.add_parser("undo", help="Revert the latest record, grade, or observe on one pattern")
+    undo_parser = subparsers.add_parser("undo", help="Revert the latest record, grade, observe, coach, or merge on one pattern")
     undo_parser.add_argument("mistake_id")
+    _add_verbose(undo_parser)
 
-    merge_parser = subparsers.add_parser("merge", help="Fold one pattern into another (source into target)")
+    merge_parser = subparsers.add_parser("merge", help="Fold one pattern into another (source into target); undo on the target reverts it")
     merge_parser.add_argument("source_id")
     merge_parser.add_argument("target_id")
     merge_parser.add_argument("--at", help="ISO-8601 merge time")
+    _add_verbose(merge_parser)
 
     rename_parser = subparsers.add_parser("rename", help="Rename or recategorize a pattern")
     rename_parser.add_argument("mistake_id")
@@ -1992,14 +3115,17 @@ def build_parser() -> argparse.ArgumentParser:
     rename_parser.add_argument("--category", choices=CATEGORY_ORDER)
     rename_parser.add_argument("--rule")
     rename_parser.add_argument("--label", help="Short German name shown to the learner")
+    _add_verbose(rename_parser)
 
     summary_parser = subparsers.add_parser("summary", help="Show the learner's FehlerDNA profile")
     summary_parser.add_argument("--at", help="ISO-8601 summary time")
     _add_format(summary_parser)
+    _add_verbose(summary_parser)
 
     recap_parser = subparsers.add_parser("recap", help="Summarize recent activity for a session opener")
     recap_parser.add_argument("--days", type=int, default=RECENT_DAYS)
     recap_parser.add_argument("--at", help="ISO-8601 recap time")
+    _add_verbose(recap_parser)
     recap_parser.add_argument(
         "--format",
         choices=("json", "text", "card"),
@@ -2007,27 +3133,73 @@ def build_parser() -> argparse.ArgumentParser:
         help="json for agents, text for a summary, card for the two-line German session header",
     )
 
-    verify_parser = subparsers.add_parser("verify", help="Check minimality and query a local LanguageTool server")
-    verify_parser.add_argument("--original", required=True)
-    verify_parser.add_argument("--corrected", required=True)
-    verify_parser.add_argument("--endpoint", default=os.environ.get("LANGUAGETOOL_URL", DEFAULT_LANGUAGETOOL_URL))
-    verify_parser.add_argument("--language", default="de-DE")
-    verify_parser.add_argument("--timeout", type=float, default=2.5)
-    verify_parser.add_argument(
-        "--allow-remote",
-        action="store_true",
-        default=os.environ.get("DEUTSCHDNA_ALLOW_REMOTE_VALIDATOR") == "1",
-        help="Permit a non-localhost endpoint (sends learner text off this machine)",
-    )
-
     roleplay_start_parser = subparsers.add_parser("roleplay-start", help="Start a delayed-feedback roleplay session")
     roleplay_start_parser.add_argument("--scenario", required=True, choices=sorted(SCENARIOS))
     roleplay_start_parser.add_argument("--focus")
+    roleplay_start_parser.add_argument("--minutes", type=int, default=5, help="Target scene duration, checked at the next turn")
+    roleplay_start_parser.add_argument("--input-mode", choices=("text", "transcript"), default="text")
     roleplay_start_parser.add_argument("--at", help="ISO-8601 start time")
+
+    speak_parser = subparsers.add_parser("speak", help="Start a scene with feedback after the conversation")
+    speak_parser.add_argument("scenario", choices=sorted(set(SCENARIOS) | set(SCENARIO_ALIASES)))
+    speak_parser.add_argument("--focus")
+    speak_parser.add_argument("--minutes", type=int, default=5)
+    speak_parser.add_argument("--input-mode", choices=("text", "transcript"), default="text")
+    speak_parser.add_argument("--at", help="ISO-8601 start time")
+
+    turn_parser = subparsers.add_parser("roleplay-turn", help="Log an actual utterance and get a natural wrap-up cue")
+    turn_parser.add_argument("session_id")
+    turn_parser.add_argument("--speaker", choices=("learner", "partner"), required=True)
+    turn_parser.add_argument("--text", required=True)
+    turn_parser.add_argument("--event-id", help="Stable message ID; repeat it only when retrying that message")
+    turn_parser.add_argument("--at")
+
+    stop_parser = subparsers.add_parser("roleplay-stop", help="End the scene and freeze duration before preparing feedback")
+    stop_parser.add_argument("session_id")
+    stop_parser.add_argument("--at")
+
+    vocab_parser = subparsers.add_parser("roleplay-vocab", help="Save a scene word to the debrief and the word deck")
+    vocab_parser.add_argument("session_id")
+    vocab_parser.add_argument("--term", required=True)
+    vocab_parser.add_argument("--meaning", required=True)
+    vocab_parser.add_argument("--turn-id", required=True)
+    vocab_parser.add_argument("--surface", help="Actual form in the turn when the term is a dictionary form")
+
+    vocab_due_parser = subparsers.add_parser("vocab-due", help="Words from scenes that are due for review")
+    vocab_due_parser.add_argument("--limit", type=int, default=5)
+    vocab_due_parser.add_argument("--at", help="ISO-8601 comparison time")
+    _add_format(vocab_due_parser)
+    _add_verbose(vocab_due_parser)
+
+    vocab_grade_parser = subparsers.add_parser("vocab-grade", help="Grade a due word the learner used in a new sentence")
+    vocab_grade_parser.add_argument("word_id")
+    vocab_grade_parser.add_argument("--result", required=True, choices=("pass", "hard", "fail"))
+    vocab_grade_parser.add_argument("--prompt", required=True, help="The new situation and meaning cue that was actually asked")
+    vocab_grade_parser.add_argument("--answer", required=True, help="The learner's actual sentence")
+    vocab_grade_parser.add_argument("--correction", help="Minimal correction of a failed answer")
+    vocab_grade_parser.add_argument("--at", help="ISO-8601 review time")
+    _add_verbose(vocab_grade_parser)
+
+    vocab_list_parser = subparsers.add_parser("vocab-list", help="The learner's word deck")
+    vocab_list_parser.add_argument("--status", choices=("active", "mastered", "all"), default="all")
+    vocab_list_parser.add_argument("--at", help="ISO-8601 time for due markers")
+    _add_format(vocab_list_parser)
+    _add_verbose(vocab_list_parser)
+
+    vocab_undo_parser = subparsers.add_parser("vocab-undo", help="Revert the latest grade or scene addition of one word")
+    vocab_undo_parser.add_argument("word_id")
+
+    vocab_forget_parser = subparsers.add_parser("vocab-forget", help="Remove a wrongly saved word, also from its scene reports")
+    vocab_forget_parser.add_argument("word_id")
+
+    scene_parser = subparsers.add_parser("roleplay-show", help="Inspect a scene or its completed debrief")
+    scene_parser.add_argument("session_id")
+    scene_parser.add_argument("--at")
+    _add_format(scene_parser)
 
     roleplay_finish_parser = subparsers.add_parser("roleplay-finish", help="Finish a roleplay session")
     roleplay_finish_parser.add_argument("session_id")
-    roleplay_finish_parser.add_argument("--turns", required=True, type=int)
+    roleplay_finish_parser.add_argument("--turns", type=int, help="Legacy scenes only; recorded turns are counted automatically")
     roleplay_finish_parser.add_argument("--duration-seconds", type=int, help="Override the timestamp-derived duration")
     roleplay_finish_parser.add_argument(
         "--mistake-id", "--mistake-ids", dest="mistake_id", action="extend", nargs="+", default=[],
@@ -2035,17 +3207,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     roleplay_finish_parser.add_argument("--notes")
     roleplay_finish_parser.add_argument("--at", help="ISO-8601 finish time")
+    _add_format(roleplay_finish_parser)
     return parser
+
+
+def mistake_view(mistake: dict[str, Any], verbose: bool) -> dict[str, Any]:
+    """Agents get the compact pattern; `--verbose` and `show` return the full record with its histories."""
+    return public(mistake) if verbose else compact(mistake)
 
 
 def run(arguments: argparse.Namespace) -> dict[str, Any]:
     store = StateStore(default_home(arguments.home))
+    with state_lock(store.home):
+        return _run_locked(store, arguments)
+
+
+def _run_locked(store: StateStore, arguments: argparse.Namespace) -> dict[str, Any]:
     command = arguments.command
+    verbose = getattr(arguments, "verbose", False)
     if command == "init":
         profile = store.init_profile(
             name=arguments.name,
             native_language=arguments.native_language,
             level=arguments.level,
+            goal=arguments.goal,
+            explanation_language=arguments.explanation_language,
+            starting_point=arguments.starting_point,
+            welcome_shown=arguments.welcome_shown,
+            onboarding_complete=arguments.onboarding_complete,
             at=parse_moment(arguments.at),
         )
         return {"status": "ready", "home": str(store.home.resolve()), "profile": profile}
@@ -2058,16 +3247,18 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
             rule=arguments.rule,
             mistake_id=arguments.mistake_id,
             context=arguments.context,
-            verification_status=arguments.verification_status,
             event_id=arguments.event_id,
             label=arguments.label,
+            session_id=arguments.session_id,
+            turn_id=arguments.turn_id,
             at=parse_moment(arguments.at),
         )
         result: dict[str, Any] = {
             "status": status,
-            "mistake": public(mistake),
+            "mistake": mistake_view(mistake, verbose),
             "resolved_by": extra.get("resolved_by"),
             "recent": {"days": RECENT_DAYS, "occurrences": extra.get("recent_occurrences", 0)},
+            "minimality": minimality_view(arguments.original, arguments.corrected),
         }
         if extra.get("previous"):
             result["previous"] = extra["previous"]
@@ -2075,38 +3266,60 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
         if similar:
             result["similar_patterns"] = similar
             result["hint"] = (
-                f"Similar patterns already exist. If this is the same root cause, run: "
-                f"merge {mistake['id']} {similar[0]['id']}"
+                f"A similar key exists. Merge only if both name the same root cause, not merely the same rule "
+                f"template: merge {mistake['id']} {similar[0]['id']} (undo {similar[0]['id']} reverts it)"
             )
         return result
     if command == "observe":
         results = store.observe(arguments.mistake_ids, context=arguments.context, at=parse_moment(arguments.at))
         return {"status": "observed", "results": results}
+    if command == "coach":
+        variety = None
+        if arguments.outcome == "independent":
+            variety = variety_note(store.show(arguments.mistake_id), prompt=arguments.prompt, answer=arguments.answer)
+        outcome = store.coach(arguments.mistake_id, outcome=arguments.outcome, prompt=arguments.prompt,
+                              answer=arguments.answer, strategy=arguments.strategy, hint=arguments.hint,
+                              at=parse_moment(arguments.at))
+        return {**outcome, "mistake": mistake_view(outcome["mistake"], verbose),
+                "variety": variety if outcome["status"] == "coached" else None}
     if command == "due":
         moment = parse_moment(arguments.at)
         items = store.due(at=moment, limit=arguments.limit)
-        return {"as_of": iso(moment), "count": len(items), "mistakes": [public(item) for item in items]}
+        return {"as_of": iso(moment), "count": len(items), "mistakes": [mistake_view(item, verbose) for item in items]}
     if command == "grade":
+        moment = parse_moment(arguments.at)
+        variety = variety_note(store.show(arguments.mistake_id), prompt=arguments.prompt or "", answer=arguments.answer or "")
         mistake, status = store.grade(
             arguments.mistake_id,
             result=arguments.result,
             answer=arguments.answer,
             correction=arguments.correction,
-            at=parse_moment(arguments.at),
+            prompt=arguments.prompt,
+            strategy=arguments.strategy,
+            hint=arguments.hint,
+            at=moment,
         )
-        return {"status": status, "mistake": public(mistake)}
+        proof = mistake.get("learning_proof")
+        new_proof = proof if status == "graded" and proof and proof["independent"]["at"] == iso(moment) else None
+        return {"status": status, "mistake": mistake_view(mistake, verbose), "learning_proof": learning_proof_view(new_proof),
+                "variety": variety if status == "graded" else None}
     if command == "list":
-        rows = store.list(status=arguments.status, category=arguments.category)
+        rows = store.list(status=arguments.status, category=arguments.category, verbose=verbose)
         return {"count": len(rows), "status_filter": arguments.status, "mistakes": rows}
     if command == "show":
         return {"mistake": public(store.show(arguments.mistake_id))}
     if command == "forget":
-        return {"status": "forgotten", "mistake": public(store.forget(arguments.mistake_id))}
+        return {"status": "forgotten", "mistake": mistake_view(store.forget(arguments.mistake_id), verbose)}
     if command == "undo":
-        return store.undo(arguments.mistake_id)
+        outcome = store.undo(arguments.mistake_id)
+        for field in ("mistake", "restored"):
+            if field in outcome:
+                outcome[field] = mistake_view(outcome[field], verbose)
+        return outcome
     if command == "merge":
         merged = store.merge(arguments.source_id, arguments.target_id, at=parse_moment(arguments.at))
-        return {"status": "merged", "mistake": public(merged)}
+        return {"status": "merged", "mistake": mistake_view(merged, verbose),
+                "undo_available": {"action": "merge", "at": merged["undo"]["at"]}}
     if command == "rename":
         outcome = store.rename(
             arguments.mistake_id,
@@ -2115,26 +3328,50 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
             rule=arguments.rule,
             label=arguments.label,
         )
-        return {"status": "renamed", "previous_id": outcome["previous_id"], "mistake": public(outcome["mistake"])}
+        return {"status": "renamed", "previous_id": outcome["previous_id"], "mistake": mistake_view(outcome["mistake"], verbose)}
     if command == "summary":
         moment = parse_moment(arguments.at)
-        result = store.summary(at=moment)
+        result = store.summary(at=moment, verbose=verbose)
         if arguments.format == "text":
             store.mark_profile_shown(at=moment)
         return result
     if command == "recap":
-        return store.recap(days=arguments.days, at=parse_moment(arguments.at))
-    if command == "verify":
-        return verify_correction(
-            arguments.original,
-            arguments.corrected,
-            endpoint=arguments.endpoint,
-            language=arguments.language,
-            timeout=arguments.timeout,
-            allow_remote=arguments.allow_remote,
-        )
-    if command == "roleplay-start":
-        return store.roleplay_start(arguments.scenario, focus=arguments.focus, at=parse_moment(arguments.at))
+        return store.recap(days=arguments.days, at=parse_moment(arguments.at), verbose=verbose)
+    if command in {"roleplay-start", "speak"}:
+        return store.roleplay_start(arguments.scenario, focus=arguments.focus, minutes=arguments.minutes,
+                                    input_mode=arguments.input_mode, at=parse_moment(arguments.at))
+    if command == "roleplay-turn":
+        return store.roleplay_turn(arguments.session_id, speaker=arguments.speaker, text=arguments.text,
+                                   event_id=arguments.event_id, at=parse_moment(arguments.at))
+    if command == "roleplay-stop":
+        moment = parse_moment(arguments.at)
+        store.roleplay_stop(arguments.session_id, at=moment)
+        return store.roleplay_show(arguments.session_id, at=moment)
+    if command == "roleplay-vocab":
+        return store.roleplay_vocab(arguments.session_id, term=arguments.term, meaning=arguments.meaning,
+                                   surface=arguments.surface, turn_id=arguments.turn_id)
+    if command == "vocab-due":
+        moment = parse_moment(arguments.at)
+        words = store.vocab_due(at=moment, limit=arguments.limit)
+        return {"as_of": iso(moment), "count": len(words), "words": [word_output(word, moment, verbose) for word in words]}
+    if command == "vocab-grade":
+        moment = parse_moment(arguments.at)
+        word, status = store.vocab_grade(arguments.word_id, result=arguments.result, prompt=arguments.prompt,
+                                         answer=arguments.answer, correction=arguments.correction, at=moment)
+        return {"status": status, "word": word_output(word, moment, verbose)}
+    if command == "vocab-list":
+        moment = parse_moment(arguments.at)
+        words = store.vocab_list(status=arguments.status)
+        return {"as_of": iso(moment), "count": len(words), "status_filter": arguments.status,
+                "overview": vocabulary_overview(store.vocab_list(status="all"), moment),
+                "words": [word_output(word, moment, True) if verbose else word_row(word, moment) for word in words]}
+    if command == "vocab-undo":
+        outcome = store.vocab_undo(arguments.word_id)
+        return {**outcome, "word": word_output(outcome["word"], utc_now(), False)}
+    if command == "vocab-forget":
+        return {"status": "forgotten", "word": word_output(store.vocab_forget(arguments.word_id), utc_now(), False)}
+    if command == "roleplay-show":
+        return store.roleplay_show(arguments.session_id, at=parse_moment(arguments.at))
     if command == "roleplay-finish":
         session = store.roleplay_finish(
             arguments.session_id,
@@ -2144,7 +3381,7 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
             notes=arguments.notes,
             at=parse_moment(arguments.at),
         )
-        return {"status": "finished", "session": session}
+        return {"status": "finished", **store.roleplay_show(session["id"])}
     raise DeutschDNAError(f"Unsupported command: {command}")
 
 

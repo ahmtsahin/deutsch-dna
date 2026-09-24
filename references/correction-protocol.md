@@ -4,6 +4,8 @@
 
 Use this compact structure when an actual error exists:
 
+When the learner wants practice, first invite repair of one confirmed error with a small cue, as described in [the learning loop](learning-loop.md), and wait before revealing that correction. For a direct correction request, show the correction immediately. In ordinary conversation, respond to the meaning and continue with one relevant question after feedback; a correction-only request does not need a question.
+
 ```text
 Dein Satz
 Ich möchte morgen mit mein Chef darüber sprechen.
@@ -13,9 +15,6 @@ Ich möchte morgen mit meinem Chef darüber sprechen.
 
 Warum
 mit + Dativ: mein → meinem
-
-Prüfung
-LanguageTool supports this correction.
 ```
 
 Show only the changed fragment in **Warum**. If the learner asks for a natural rewrite, add:
@@ -38,6 +37,8 @@ The first line names the pattern and the numbers:
 
 The second line quotes the earliest stored sentence for this pattern (`previous.first_example`) with its date, next to the sentence from today. Seeing their own old sentence is what makes the learner feel remembered.
 
+The first example is pinned independently of the recent history. On migrated older data, it may only be the earliest retained example: when `previous.first_example_is_original` is false, do not call it the learner's first-ever mistake or pair it with `first_seen`. Use the example's own date.
+
 ```text
 Muster
 mit + Dativ · 3. Mal in 7 Tagen
@@ -54,7 +55,7 @@ Then say in one sentence that it will come back tomorrow in a new sentence. Neve
 
 ## The before-and-after line
 
-When the learner gets a tracked pattern right, unprompted or in an opener task, log it with `observe` and set the last wrong sentence from the response (`last_mistake`) next to the new one:
+For a correct, unprompted use, log `observe` and set the last wrong sentence from the response (`last_mistake`) next to the new one. An opener task is prompted: use `grade` when due, or `coach` otherwise, as described in [the learning loop](learning-loop.md). Do not also observe the same answer.
 
 ```text
 Vor 12 Tagen: „Ich spreche mit mein Chef." · Heute: „Wir haben mit unseren Kunden gesprochen." ✓
@@ -62,25 +63,17 @@ Vor 12 Tagen: „Ich spreche mit mein Chef." · Heute: „Wir haben mit unseren 
 
 Keep it to one line and do not explain the rule again; the contrast is the message.
 
+When a new `learning_proof` is returned, prefer its with-help/without-help comparison to a second before-and-after block. Use its real sentences, `at_local` dates, and source. An unaided new task is not spontaneous writing, and one transfer is not mastery.
+
 ## Minimality
 
 - Preserve the learner's meaning, register, tense, vocabulary, and information order.
 - Change multiple tokens only when one grammatical dependency requires it, such as article plus adjective ending.
 - Do not replace a valid word with a preferred synonym.
 - Keep punctuation and capitalization changes separate from grammar explanations when that makes the real error easier to see.
-- If the CLI returns `minimality_status: possible_rewrite`, reconsider the correction or clearly label the larger version as an alternative.
+- If `record` returns `minimality.status: possible_rewrite`, you changed more than grammar required: reconsider the correction, `undo` the record, or clearly label the larger version as an alternative.
 
-## Validator labels
-
-Use the CLI result without upgrading its certainty:
-
-- `verified`: LanguageTool found an issue in the original, suggested the changed fragment, and found no issue in the correction. Say **LanguageTool supports this correction**.
-- `supported`: LanguageTool reports fewer issues and no new rule IDs, but some findings remain. Say **LanguageTool partially supports this correction**.
-- `no_finding`: LanguageTool did not detect the proposed error. Say **LanguageTool did not verify this change**.
-- `uncertain`: findings remain or new rule IDs appear. Show the disagreement briefly and call the change a suggestion.
-- `unavailable`: the local server could not be reached, or the endpoint is remote and not allowed. Say **Not LanguageTool-verified**.
-
-These labels mean machine-checked, not linguistically proven. Semantic and register judgments remain model-only.
+No tool checks the correction itself. Do not call a correction verified or machine-checked; when you are unsure, say so and offer a suggestion instead of recording it.
 
 ## What to persist
 

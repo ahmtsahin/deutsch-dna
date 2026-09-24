@@ -75,17 +75,17 @@ If `active_roleplay` exists and the learner is continuing that scene, read `role
 
 If `recap.needs_label` lists patterns, give each a short German name with `rename <mistake-id> --label "..."` and run `recap` again. Otherwise open in this order, with the explanation language available when needed:
 
-1. **Greeting.** One short line with their name, such as „Hallo Ahmet!".
+1. **Greeting.** One short line with their name, such as „Hallo Alex!".
 2. **Board.** The `card` from the recap in a code block, exactly as printed. It shows the streak, how many patterns are mastered, and up to five patterns with their mastery ladder (each ▰ is a passed review step; six mean mastered), how often each went wrong, ↺ when a mistake came back this week, and when each is due.
 3. **Callback.** The target pattern is `recap.callback`: the first due pattern, or else the active pattern with the most recent mistake (`reason` says which). Quote the learner's sentence from its `last_example` with the day and the time from `seen_at_local`, without the correction. Then put them in one new, natural situation that requires the same structure. Use their stated `profile.goal` when it fits. Keep the actual question for `--prompt`. Read the target's `coaching` memory: keep a previously helpful hint in reserve, but first let them answer unaided. If nothing is active, continue a natural conversation about their goal; do not invent a weak point.
 4. **Optional usage hint.** When it helps the learner discover what to do, add one short line of natural phrases in their explanation language. Do not repeat the whole menu every session or after a specific request.
 
 For a B2 learner with five open patterns, the opener reads:
 
-Hallo Ahmet!
+Hallo Alex!
 
 ```text
-DeutschDNA · Ahmet · B2 · 2 Tage in Folge · 0 von 5 gemeistert
+DeutschDNA · Alex · B2 · 2 Tage in Folge · 0 von 5 gemeistert
 
 hätte gern (höflich)       ▱▱▱▱▱▱ 0/6   2× falsch ↺   heute 15:54
 mit + Dativ                ▱▱▱▱▱▱ 0/6   1× falsch     heute 15:42

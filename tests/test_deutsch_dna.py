@@ -369,7 +369,7 @@ class RepairTests(StoreTestCase):
 
 class ReportingTests(StoreTestCase):
     def test_summary_reports_accuracy_clusters_and_streak(self):
-        self.store.init_profile(name="Ahmet", level="B2", at=BASE_TIME)
+        self.store.init_profile(name="Alex", level="B2", at=BASE_TIME)
         first, _, _ = self.record_example(
             category="preposition",
             pattern="warten auf + accusative",
@@ -401,7 +401,7 @@ class ReportingTests(StoreTestCase):
         self.assertEqual(summary["clusters"][0]["category"], "preposition")
         self.assertEqual(summary["clusters"][0]["patterns"][0], "denken an + accusative")
         self.assertEqual(summary["streak_days"], 2)
-        self.assertEqual(summary["profile"]["name"], "Ahmet")
+        self.assertEqual(summary["profile"]["name"], "Alex")
         self.assertEqual(summary["due_now"], 1)
 
         self.grade_example(first["id"], result="pass", prompt="Dein Bruder kommt später. Auf wen wartest du?",
@@ -526,7 +526,7 @@ class CliTests(unittest.TestCase):
         self.assertIn("m_fehlt_→", error.stderr.decode("utf-8"))
 
     def test_text_renderers_and_json_commands(self):
-        self.run_cli("init", "--name", "Ahmet", "--level", "B2", "--at", "2026-09-01T09:00:00Z")
+        self.run_cli("init", "--name", "Alex", "--level", "B2", "--at", "2026-09-01T09:00:00Z")
         recorded = json.loads(
             self.run_cli(
                 "record",
@@ -541,12 +541,12 @@ class CliTests(unittest.TestCase):
         mistake_id = recorded["mistake"]["id"]
         self.assertEqual(recorded["recent"]["occurrences"], 1)
         summary = self.run_cli("summary", "--format", "text", "--at", "2026-09-02T09:00:00Z")
-        self.assertIn("DeutschDNA · Ahmet · B2", summary)
+        self.assertIn("DeutschDNA · Alex · B2", summary)
         self.assertIn("Kasus", summary)
         self.assertIn("neu", summary)
         self.assertNotIn("%", summary)
         recap = self.run_cli("recap", "--format", "text", "--at", "2026-09-02T09:00:00Z")
-        self.assertIn("Willkommen zurück, Ahmet.", recap)
+        self.assertIn("Willkommen zurück, Alex.", recap)
         self.assertIn("1 Fehler zum Wiederholen fällig", recap)
         due = self.run_cli("due", "--format", "text", "--at", "2026-09-02T09:00:00Z")
         self.assertIn(mistake_id, due)
@@ -799,7 +799,7 @@ class UndoTests(StoreTestCase):
 
 class CallbackDataTests(StoreTestCase):
     def test_first_session_profile_has_no_percentages_and_names_the_share(self):
-        self.store.init_profile(name="Ahmet", level="B2", native_language="tr", at=BASE_TIME)
+        self.store.init_profile(name="Alex", level="B2", native_language="tr", at=BASE_TIME)
         sentences = [
             ("word-order", "finite verb in second position", "Morgen ich gehe.", "Morgen gehe ich."),
             ("word-order", "finite verb in second position", "Dann ich esse.", "Dann esse ich."),
@@ -895,7 +895,7 @@ class LocalTimeAndCardTests(StoreTestCase):
 
     def test_card_shows_a_board_with_ladders_and_local_times(self):
         self.use_offset("+02:00")
-        self.store.init_profile(name="Ahmet", level="B2", native_language="tr", at=BASE_TIME)
+        self.store.init_profile(name="Alex", level="B2", native_language="tr", at=BASE_TIME)
         self.record_example()
         self.record_example(
             category="verb",
@@ -909,7 +909,7 @@ class LocalTimeAndCardTests(StoreTestCase):
         )
         recap = self.store.recap(at=datetime(2026, 9, 11, 8, 0, tzinfo=timezone.utc))
         lines = recap["card"].splitlines()
-        self.assertEqual(lines[0], "DeutschDNA · Ahmet · B2 · 1 Tag in Folge · 0 von 2 gemeistert")
+        self.assertEqual(lines[0], "DeutschDNA · Alex · B2 · 1 Tag in Folge · 0 von 2 gemeistert")
         self.assertEqual(lines[1], "")
         self.assertTrue(lines[2].startswith("mit + Dativ "))
         self.assertIn("▱▱▱▱▱▱ 0/6", lines[2])

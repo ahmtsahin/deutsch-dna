@@ -320,7 +320,7 @@ def seed_learning_loop(home: Path) -> None:
     # Keep every first-session attempt on the previous local day, even when
     # this demo is rendered just before midnight.
     yesterday = dna.to_local(today).replace(hour=9, minute=0, second=0, microsecond=0) - timedelta(days=1)
-    store.init_profile(name="Ahmet", level="B2", native_language="tr",
+    store.init_profile(name="Alex", level="B2", native_language="tr",
                        goal="Im Gespräch mit Kunden sicherer werden", at=yesterday)
     mistake, _, _ = store.record(original="Ich spreche mit mein Chef.", corrected="Ich spreche mit meinem Chef.",
                                  category="case", pattern="mit + dative", rule="mit verlangt den Dativ", at=yesterday)
@@ -339,7 +339,7 @@ def seed(home: Path) -> None:
     keys_by_id: dict[str, str] = {}
     queues = {key: list(outcomes) for key, outcomes in REVIEWS.items()}
     tasks = {key: iter(fallback_tasks(key)) for key in PATTERNS}
-    store.init_profile(name="Ahmet", level="B2", native_language="tr", at=anchor - timedelta(days=STORY_DAYS, minutes=10))
+    store.init_profile(name="Alex", level="B2", native_language="tr", at=anchor - timedelta(days=STORY_DAYS, minutes=10))
 
     for days_ago in range(STORY_DAYS, -1, -1):
         day_start = anchor - timedelta(days=days_ago)
@@ -395,7 +395,7 @@ def seed_speaking_scene(home: Path) -> str:
     """Scripted restaurant exchange; duration, corrections and recurrence counts come from stored events."""
     store = dna.StateStore(home)
     started_at = dna.utc_now() - timedelta(minutes=10)
-    store.init_profile(name="Ahmet", level="B2", explanation_language="tr", at=started_at)
+    store.init_profile(name="Alex", level="B2", explanation_language="tr", at=started_at)
     identifier = store.roleplay_start("restaurant", at=started_at)["session"]["id"]
     dialogue = [
         (0, "partner", "Guten Abend. Haben Sie reserviert?"),
@@ -470,7 +470,7 @@ def main(argv: list[str] | None = None) -> int:
         print("DeutschDNA speaking demo: scripted dialogue, real engine evidence.")
         print(f"State directory: {home}")
         for turn in result["session"]["utterances"]:
-            speaker = "Kellner" if turn["speaker"] == "partner" else "Ahmet"
+            speaker = "Kellner" if turn["speaker"] == "partner" else "Alex"
             print(f"{speaker}: {turn['text']}")
         print()
         print(dna.render_roleplay_text(result))

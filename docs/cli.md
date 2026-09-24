@@ -8,7 +8,7 @@ Run these examples from the cloned skill folder.
 The agent drives the CLI; you can use it directly too. Every command prints JSON, compact when an agent reads it and indented in your terminal; `show` returns a pattern's full history. `recap`, `summary`, `due`, `show`, `vocab-due`, and `vocab-list` also take `--format text` for German cards, and `list --format text` prints a table of the pattern keys.
 
 ```bash
-python scripts/deutsch_dna.py init --name "Ahmet" --level B2 --native-language tr
+python scripts/deutsch_dna.py init --name "Alex" --level B2 --native-language tr
 python scripts/deutsch_dna.py record --original "Ich spreche mit mein Chef." --corrected "Ich spreche mit meinem Chef." --category case --pattern "mit + dative" --rule "mit always governs the dative"
 python scripts/deutsch_dna.py summary --format text
 ```

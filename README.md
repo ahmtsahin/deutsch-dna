@@ -52,6 +52,14 @@ The clone commands work in macOS/Linux terminals and PowerShell. For project-onl
 
 [Full conversation](demo/conversation.md) · [Captured replies and saved evidence](demo/conversation.json) · [Static view](demo/conversation.png)
 
+## Every session starts with your board
+
+<p align="center">
+<img src="demo/board.png" width="720" alt="The board that opens a session: DeutschDNA · Alex · B2 · 17 Tage in Folge · 2 von 14 gemeistert. Five patterns with their review ladders, error counts, a marker for mistakes that came back this week, and when each is due.">
+</p>
+
+**Your patterns, what is due first, and which mistakes came back.** The tutor then quotes one of your own sentences and puts it in a new situation. This board belongs to the scripted four-month learner and comes straight from the engine.
+
 ## What you can do
 
 | Say this | What happens |

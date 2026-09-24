@@ -26,7 +26,7 @@ If useful, give one brief line in their explanation language: “Garsonu ben oyn
 Kellner: Guten Abend. Haben Sie reserviert?
 ```
 
-Use the actual learner's name only if they supplied it. Do not fabricate “Ahmet:” replies or print both sides as a finished dialogue. Wait for every answer. Speaker labels are optional, but should stay clear and consistent.
+Use the actual learner's name only if they supplied it. Do not fabricate “Alex:” replies or print both sides as a finished dialogue. Wait for every answer. Speaker labels are optional, but should stay clear and consistent.
 
 ## Keep the conversation moving
 

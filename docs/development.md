@@ -26,9 +26,10 @@ python -m pip install pillow
 python scripts/render_demo_gif.py --story learning-loop
 python scripts/render_demo_gif.py --story history
 python scripts/render_demo_gif.py --story conversation
+python scripts/render_demo_gif.py --story board
 ```
 
-Each command writes a GIF and a static PNG under `demo/`. Pass `--frames-dir demo-home/frames` to inspect every complete scene at its full size and at the 309 px width used in the mobile review. Text that exceeds the layout raises an error instead of being silently clipped or shrunk.
+Each story command writes a GIF and a static PNG under `demo/`; `board` writes only `demo/board.png`, a 1600 × 900 image of the four-month learner's session board that also works as a social preview. Its review ladders and comeback markers are drawn, so any monospaced font renders them. Pass `--frames-dir demo-home/frames` to inspect every complete scene at its full size and at the 309 px width used in the mobile review. Text that exceeds the layout raises an error instead of being silently clipped or shrunk.
 
 The learning-loop story opens on the result and lasts 11 seconds. The history story opens on the returning mistake and lasts 9 seconds. Both use scripted learner inputs and actual engine state, with dates anchored to the render day. The conversation replay lasts 16 seconds and reveals each learner message before its tutor reply.
 

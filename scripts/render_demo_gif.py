@@ -95,6 +95,81 @@ def collect_history_screens() -> list[dict]:
     ]
 
 
+def collect_board() -> tuple[str, str]:
+    """The session board of the four-month demo learner, exactly as `recap --format card` prints it."""
+    with tempfile.TemporaryDirectory(prefix="deutschdna-board-") as directory:
+        demo.seed(Path(directory))
+        recap = dna.StateStore(Path(directory)).recap()
+    return recap["profile"]["name"], dna.render_recap_card(recap)
+
+
+def draw_comeback(draw: ImageDraw.ImageDraw, x: float, y: int, cell: float, color: str) -> None:
+    """Draw ↺ inside one character cell; common monospaced fonts such as Consolas lack the glyph."""
+    size = min(cell, 20)
+    left, top = x + (cell - size) / 2, y + 12
+    # Open at the upper right, like the font glyph; the arrowhead sits on the top end.
+    draw.arc((left, top, left + size, top + size), start=315, end=270, fill=COLORS[color], width=3)
+    middle = left + size / 2
+    draw.polygon([(middle + 7, top + 1), (middle - 2, top - 5), (middle - 2, top + 7)], fill=COLORS[color])
+
+
+def render_board(name: str, card: str, font_path: Path) -> Image.Image:
+    width, height = 1600, 900
+    label = ImageFont.truetype(str(font_path), 30)
+    title = ImageFont.truetype(str(font_path), 64)
+    mono = ImageFont.truetype(str(font_path), 34)
+    lines = card.splitlines()
+    image = Image.new("RGB", (width, height), COLORS["page"])
+    draw = ImageDraw.Draw(image)
+    draw.text((64, 44), "DeutschDNA", font=label, fill=COLORS["accent"])
+    link = "github.com/ahmtsahin/deutsch-dna"
+    draw.text((width - 64 - label.getlength(link), 44), link, font=label, fill=COLORS["muted"])
+    draw.text((64, 112), "HOW EVERY SESSION STARTS", font=label, fill=COLORS["accent"])
+    draw.text((64, 156), f"Hallo {name}!", font=title, fill=COLORS["text"])
+
+    top, line_height, pad = 262, 50, 48
+    bottom = top + 80 + line_height * len(lines) - 14
+    if max(mono.getlength(line) for line in lines) > width - 128 - 2 * pad or bottom > height - 110:
+        raise ValueError("The board does not fit the image; shorten the demo board")
+    draw.rounded_rectangle((64, top, width - 64, bottom), radius=24, fill=COLORS["panel"], outline=COLORS["border"], width=2)
+    cell = mono.getlength(" ")
+
+    def paint(x: float, y: int, text: str, color: str) -> float:
+        draw.text((x, y), text, font=mono, fill=COLORS[color])
+        return x + mono.getlength(text)
+
+    for index, line in enumerate(lines):
+        x, y = 64 + pad, top + 40 + index * line_height
+        ladder = re.search(r"[▰▱]+", line)
+        if index == 0:
+            head, _, rest = line.partition(" · ")
+            paint(paint(x, y, head, "accent"), y, f" · {rest}", "text")
+        elif not ladder:
+            paint(x, y, line, "muted")
+        else:
+            # Label, review ladder drawn as boxes, then counts, the comeback marker, and the due time.
+            x = paint(x, y, line[: ladder.start()], "text")
+            steps = ladder.group(0)
+            box = (cell * len(steps) - 8) / len(steps) - 4
+            for number, step in enumerate(steps):
+                left = x + 4 + number * (box + 4)
+                shape = (left, y + 12, left + box, y + 32)
+                if step == "▰":
+                    draw.rounded_rectangle(shape, radius=3, fill=COLORS["accent"])
+                else:
+                    draw.rounded_rectangle(shape, radius=3, outline=COLORS["border"], width=2)
+            x += cell * len(steps)
+            for part in re.findall(r"↺|jetzt fällig|[^↺]+?(?=↺|jetzt fällig|$)", line[ladder.end():]):
+                if part == "↺":
+                    draw_comeback(draw, x, y, cell, "red")
+                    x += cell
+                else:
+                    x = paint(x, y, part, "accent" if part == "jetzt fällig" else "muted")
+    draw.text((64, bottom + 34), "Your own mistakes, ordered by what is due today.", font=label, fill=COLORS["text"])
+    draw.text((64, bottom + 78), "Scripted learner / real engine output", font=label, fill=COLORS["muted"])
+    return image
+
+
 def plain(text: str) -> str:
     """Remove emphasis markers for the visual replay, preserving the actual words."""
     return re.sub(r"[*_`]", "", text).strip()
@@ -201,13 +276,19 @@ def render_frame(screen: dict, index: int, count: int, font_path: Path, *,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--story", choices=("history", "learning-loop", "conversation"), default="learning-loop")
-    parser.add_argument("--output", type=Path, help="Output GIF; a static PNG is saved beside it")
+    parser.add_argument("--story", choices=("history", "learning-loop", "conversation", "board"), default="learning-loop")
+    parser.add_argument("--output", type=Path, help="Output GIF; a static PNG is saved beside it (board: the PNG itself)")
     parser.add_argument("--font", help="Path to a monospaced TrueType font")
     parser.add_argument("--frames-dir", type=Path, help="Save full-size and 309 px wide PNGs for review")
     parser.add_argument("--transcript", type=Path, default=ROOT / "demo" / "conversation.json")
     arguments = parser.parse_args(argv)
     font = find_font(arguments.font)
+    if arguments.story == "board":
+        output = arguments.output or ROOT / "demo" / "board.png"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        render_board(*collect_board(), font).save(output)
+        print(f"Rendered the session board to {output}")
+        return 0
     if arguments.story == "learning-loop":
         screens, filename = collect_learning_screens(), "learning-loop"
     elif arguments.story == "history":

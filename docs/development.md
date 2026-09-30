@@ -89,10 +89,22 @@ The script makes two real host calls and uses the same isolation as the conversa
 python scripts/render_demo_gif.py --story session --transcript demo-home/new-session.json --output demo-home/new-session.png
 ```
 
-## Plugin manifest
+## Plugin manifests
 
-`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` make the repository installable as a Claude Code plugin. The version in `plugin.json` must match `metadata.version` in `SKILL.md`; a unit test checks this. Claude Code keeps users on a version until it changes, so raise both with every release. Check the manifests with:
+`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` make the repository installable as a Claude Code plugin. Codex reads the same marketplace file and takes `.codex-plugin/plugin.json` as the plugin's manifest. The version in both manifests must match `metadata.version` in `SKILL.md`; unit tests check this. Claude Code keeps users on a version until it changes, so raise all three with every release. Check the Claude Code manifests with:
 
 ```bash
 claude plugin validate .
 ```
+
+Claude Code loads the root `SKILL.md` as the plugin's only skill. Codex loads a plugin's skills only from a subfolder, so `.codex-plugin/skills/deutsch-dna/SKILL.md` is a short entry file that sends the agent to the root `SKILL.md`. Its name and description must match the root file. It stays in a hidden folder: Codex skips hidden folders when it scans a skills folder, so a cloned skill folder still shows one skill.
+
+Codex has no validate command. To see what it loads, set `CODEX_HOME` to an empty folder, so that your own Codex setup stays untouched, and run these from the repository. No model is called:
+
+```bash
+codex plugin marketplace add .
+codex plugin add deutsch-dna@deutsch-dna
+codex debug prompt-input hi
+```
+
+The printed skills list must name `deutsch-dna:deutsch-dna` once, with a file path that ends in `.codex-plugin/skills/deutsch-dna/SKILL.md`.

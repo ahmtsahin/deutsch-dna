@@ -35,6 +35,22 @@ claude plugin install deutsch-dna@deutsch-dna
 
 Start a chat with `/deutsch-dna:deutsch-dna`; a plugin's skills carry its name as a prefix. To update later, run `claude plugin update deutsch-dna@deutsch-dna`. Use either the plugin or the cloned skill folder, so that the skill appears once.
 
+### As a Codex plugin
+
+Codex reads the same marketplace entry. In a terminal:
+
+```bash
+codex plugin marketplace add ahmtsahin/deutsch-dna
+```
+
+```bash
+codex plugin add deutsch-dna@deutsch-dna
+```
+
+Start a new chat with `$deutsch-dna:deutsch-dna`. To update later, run `codex plugin marketplace upgrade deutsch-dna`. Use either the plugin or the cloned skill folder here too.
+
+Codex shows the cloned skill under the same name, `deutsch-dna:deutsch-dna`, because the folder contains the plugin manifest. `$deutsch-dna` still starts it.
+
 ### Let it save without asking
 
 The skill keeps your progress in `~/.deutschdna` through a small Python helper. Depending on your host permissions, helper calls may ask for approval or the sandbox may block the state folder. One optional setting removes those interruptions.
@@ -55,7 +71,7 @@ The skill keeps your progress in `~/.deutschdna` through a small Python helper. 
 
 Use `python3` or `py` instead of `python` if that is how your system runs Python. These rules allow Python commands that mention the helper, so keep them only if you trust the skill folder.
 
-**Codex** runs commands in a sandbox that may write only to your project. From the cloned skill folder, create the state directory by running `python scripts/deutsch_dna.py recap` in a normal terminal, and then list it as a writable root in `~/.codex/config.toml`:
+**Codex** runs commands in a sandbox that may write only to your project. Create the state directory in a normal terminal: run `python scripts/deutsch_dna.py recap` from the cloned skill folder or, with the plugin, create the folder `~/.deutschdna` yourself. Then list it as a writable root in `~/.codex/config.toml`:
 
 ```toml
 [sandbox_workspace_write]

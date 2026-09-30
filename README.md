@@ -46,6 +46,15 @@ git clone https://github.com/ahmtsahin/deutsch-dna.git "$HOME/.agents/skills/deu
 
 Start a chat with **`$deutsch-dna`**.
 
+**Codex, as a plugin**
+
+```bash
+codex plugin marketplace add ahmtsahin/deutsch-dna
+codex plugin add deutsch-dna@deutsch-dna
+```
+
+Start a new chat with **`$deutsch-dna:deutsch-dna`**.
+
 The tutor gives you one small German task right away. You can ask for explanations in your own language. Your name and goals are optional.
 
 The commands work in macOS/Linux terminals and PowerShell. Use either the cloned folder or the plugin, so that the skill appears once. For project-only installation, Python on Windows, or the one-time permission setup that lets the tutor save progress, see [installation and permissions](docs/setup.md).

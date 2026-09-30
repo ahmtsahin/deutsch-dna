@@ -1,6 +1,6 @@
 {
   "name": "deutsch-dna",
-  "description": "DeutschDNA, a German tutor with memory for Claude Code",
+  "description": "DeutschDNA, a German tutor with memory for Claude Code and Codex",
   "owner": {
     "name": "Ahmet Sahin",
     "url": "https://github.com/ahmtsahin"

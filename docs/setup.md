@@ -21,6 +21,20 @@ The commands work in macOS and Linux terminals and in PowerShell. For a single p
 
 See the official [Claude Code skill guide](https://code.claude.com/docs/en/skills) and [Codex skill guide](https://developers.openai.com/codex/skills/) for discovery rules. Python 3.10+ is required; no Python packages are needed for the runtime. On Windows, the `py -3` launcher works where `python` only opens the Microsoft Store.
 
+### As a Claude Code plugin
+
+The repository is also a plugin with its own marketplace entry. In a terminal:
+
+```bash
+claude plugin marketplace add ahmtsahin/deutsch-dna
+```
+
+```bash
+claude plugin install deutsch-dna@deutsch-dna
+```
+
+Start a chat with `/deutsch-dna:deutsch-dna`; a plugin's skills carry its name as a prefix. To update later, run `claude plugin update deutsch-dna@deutsch-dna`. Use either the plugin or the cloned skill folder, so that the skill appears once.
+
 ### Let it save without asking
 
 The skill keeps your progress in `~/.deutschdna` through a small Python helper. Depending on your host permissions, helper calls may ask for approval or the sandbox may block the state folder. One optional setting removes those interruptions.

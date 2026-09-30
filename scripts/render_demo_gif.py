@@ -2,7 +2,7 @@
 """Render readable README stories from engine records or a captured conversation.
 
 Pillow is only needed for this contributor tool. The learning and history stories
-use scripted learner inputs; the conversation story replays real host replies.
+use scripted learner inputs; the conversation and session stories replay real host replies.
 """
 
 from __future__ import annotations
@@ -26,6 +26,7 @@ import deutsch_dna as dna  # noqa: E402
 
 WIDTH, HEIGHT = 720, 800
 QUOTE_SIZE = 42  # 18 CSS px when GitHub displays this image at 309 px wide.
+QUOTATION_MARKS = "„“”\"‚‘’'«»"
 COLORS = {
     "page": "#11111b", "panel": "#1b1b2b", "border": "#45475a",
     "text": "#e4e7f5", "muted": "#b2b8ce", "accent": "#d9ff45",
@@ -103,35 +104,32 @@ def collect_board() -> tuple[str, str]:
     return recap["profile"]["name"], dna.render_recap_card(recap)
 
 
-def draw_comeback(draw: ImageDraw.ImageDraw, x: float, y: int, cell: float, color: str) -> None:
+def draw_comeback(draw: ImageDraw.ImageDraw, x: float, y: int, cell: float, color: str, scale: float = 1) -> None:
     """Draw ↺ inside one character cell; common monospaced fonts such as Consolas lack the glyph."""
-    size = min(cell, 20)
-    left, top = x + (cell - size) / 2, y + 12
+    size = min(cell, 20 * scale)
+    left, top = x + (cell - size) / 2, y + 12 * scale
     # Open at the upper right, like the font glyph; the arrowhead sits on the top end.
-    draw.arc((left, top, left + size, top + size), start=315, end=270, fill=COLORS[color], width=3)
+    draw.arc((left, top, left + size, top + size), start=315, end=270, fill=COLORS[color], width=round(3 * scale))
     middle = left + size / 2
-    draw.polygon([(middle + 7, top + 1), (middle - 2, top - 5), (middle - 2, top + 7)], fill=COLORS[color])
+    draw.polygon([(middle + 7 * scale, top + scale), (middle - 2 * scale, top - 5 * scale),
+                  (middle - 2 * scale, top + 7 * scale)], fill=COLORS[color])
 
 
-def render_board(name: str, card: str, font_path: Path) -> Image.Image:
-    width, height = 1600, 900
-    label = ImageFont.truetype(str(font_path), 30)
-    title = ImageFont.truetype(str(font_path), 64)
-    mono = ImageFont.truetype(str(font_path), 34)
-    lines = card.splitlines()
-    image = Image.new("RGB", (width, height), COLORS["page"])
-    draw = ImageDraw.Draw(image)
+def draw_header(draw: ImageDraw.ImageDraw, width: int, stage: str, heading: str,
+                label: ImageFont.FreeTypeFont, title: ImageFont.FreeTypeFont) -> None:
     draw.text((64, 44), "DeutschDNA", font=label, fill=COLORS["accent"])
     link = "github.com/ahmtsahin/deutsch-dna"
     draw.text((width - 64 - label.getlength(link), 44), link, font=label, fill=COLORS["muted"])
-    draw.text((64, 112), "HOW EVERY SESSION STARTS", font=label, fill=COLORS["accent"])
-    draw.text((64, 156), f"Hallo {name}!", font=title, fill=COLORS["text"])
+    draw.text((64, 112), stage, font=label, fill=COLORS["accent"])
+    draw.text((64, 156), heading, font=title, fill=COLORS["text"])
 
-    top, line_height, pad = 262, 50, 48
-    bottom = top + 80 + line_height * len(lines) - 14
-    if max(mono.getlength(line) for line in lines) > width - 128 - 2 * pad or bottom > height - 110:
-        raise ValueError("The board does not fit the image; shorten the demo board")
-    draw.rounded_rectangle((64, top, width - 64, bottom), radius=24, fill=COLORS["panel"], outline=COLORS["border"], width=2)
+
+def draw_card(draw: ImageDraw.ImageDraw, lines: list[str], left: int, top: int,
+              mono: ImageFont.FreeTypeFont, line_height: int, scale: float = 1) -> None:
+    """Draw the board as the engine prints it, with the ladders and comeback markers as shapes.
+
+    The shapes are sized for 34 px type; `scale` adapts them to another size.
+    """
     cell = mono.getlength(" ")
 
     def paint(x: float, y: int, text: str, color: str) -> float:
@@ -139,7 +137,7 @@ def render_board(name: str, card: str, font_path: Path) -> Image.Image:
         return x + mono.getlength(text)
 
     for index, line in enumerate(lines):
-        x, y = 64 + pad, top + 40 + index * line_height
+        x, y = left, top + index * line_height
         ladder = re.search(r"[▰▱]+", line)
         if index == 0:
             head, _, rest = line.partition(" · ")
@@ -150,10 +148,11 @@ def render_board(name: str, card: str, font_path: Path) -> Image.Image:
             # Label, review ladder drawn as boxes, then counts, the comeback marker, and the due time.
             x = paint(x, y, line[: ladder.start()], "text")
             steps = ladder.group(0)
-            box = (cell * len(steps) - 8) / len(steps) - 4
+            gap = 4 * scale
+            box = (cell * len(steps) - 2 * gap) / len(steps) - gap
             for number, step in enumerate(steps):
-                left = x + 4 + number * (box + 4)
-                shape = (left, y + 12, left + box, y + 32)
+                start = x + gap + number * (box + gap)
+                shape = (start, y + 12 * scale, start + box, y + 32 * scale)
                 if step == "▰":
                     draw.rounded_rectangle(shape, radius=3, fill=COLORS["accent"])
                 else:
@@ -161,12 +160,121 @@ def render_board(name: str, card: str, font_path: Path) -> Image.Image:
             x += cell * len(steps)
             for part in re.findall(r"↺|jetzt fällig|[^↺]+?(?=↺|jetzt fällig|$)", line[ladder.end():]):
                 if part == "↺":
-                    draw_comeback(draw, x, y, cell, "red")
+                    draw_comeback(draw, x, y, cell, "red", scale)
                     x += cell
                 else:
                     x = paint(x, y, part, "accent" if part == "jetzt fällig" else "muted")
+
+
+def render_board(name: str, card: str, font_path: Path) -> Image.Image:
+    width, height = 1600, 900
+    label = ImageFont.truetype(str(font_path), 30)
+    title = ImageFont.truetype(str(font_path), 64)
+    mono = ImageFont.truetype(str(font_path), 34)
+    lines = card.splitlines()
+    image = Image.new("RGB", (width, height), COLORS["page"])
+    draw = ImageDraw.Draw(image)
+    draw_header(draw, width, "HOW EVERY SESSION STARTS", f"Hallo {name}!", label, title)
+
+    top, line_height, pad = 262, 50, 48
+    bottom = top + 80 + line_height * len(lines) - 14
+    if max(mono.getlength(line) for line in lines) > width - 128 - 2 * pad or bottom > height - 110:
+        raise ValueError("The board does not fit the image; shorten the demo board")
+    draw.rounded_rectangle((64, top, width - 64, bottom), radius=24, fill=COLORS["panel"], outline=COLORS["border"], width=2)
+    draw_card(draw, lines, 64 + pad, top + 40, mono, line_height)
     draw.text((64, bottom + 34), "Your own mistakes, ordered by what is due today.", font=label, fill=COLORS["text"])
     draw.text((64, bottom + 78), "Scripted learner / real engine output", font=label, fill=COLORS["muted"])
+    return image
+
+
+def render_social(card: str, font_path: Path) -> Image.Image:
+    """The board at GitHub's social preview size, 1280 × 640."""
+    width, height = 1280, 640
+    label = ImageFont.truetype(str(font_path), 24)
+    title = ImageFont.truetype(str(font_path), 54)
+    mono = ImageFont.truetype(str(font_path), 26)
+    lines = card.splitlines()
+    image = Image.new("RGB", (width, height), COLORS["page"])
+    draw = ImageDraw.Draw(image)
+    draw.text((56, 34), "DeutschDNA", font=label, fill=COLORS["accent"])
+    hosts = "for Claude Code and Codex"
+    draw.text((width - 56 - label.getlength(hosts), 34), hosts, font=label, fill=COLORS["muted"])
+    draw.text((56, 78), "A German tutor that", font=title, fill=COLORS["text"])
+    draw.text((56, 140), "remembers your mistakes.", font=title, fill=COLORS["text"])
+
+    top, line_height, pad = 232, 36, 40
+    bottom = top + 2 * 30 + line_height * len(lines) - 8
+    if max(mono.getlength(line) for line in lines) > width - 112 - 2 * pad or bottom > height - 56:
+        raise ValueError("The board does not fit the social preview; shorten the demo board")
+    draw.rounded_rectangle((56, top, width - 56, bottom), radius=20, fill=COLORS["panel"], outline=COLORS["border"], width=2)
+    draw_card(draw, lines, 56 + pad, top + 30, mono, line_height, scale=26 / 34)
+    draw.text((56, bottom + 16), "Local memory. No API key. Scripted learner, real engine output.",
+              font=label, fill=COLORS["muted"])
+    return image
+
+
+def collect_session(source: Path) -> dict:
+    """The opening reply of a recorded chat: greeting, engine board, quoted sentence, and new task."""
+    recording = json.loads(source.read_text(encoding="utf-8"))
+    reply, card, quoted = recording["exchanges"][0]["tutor"], recording["card"], recording["evidence"]["quoted"]
+    if card not in reply:
+        raise ValueError("The recorded reply does not show the engine's board")
+    before, _, after = reply.partition(card)
+    # plain() removes the code fence, which leaves its paragraph empty.
+    paragraphs = [text for text in map(plain, after.split("\n\n")) if text]
+    if len(paragraphs) < 2 or quoted["original"] not in paragraphs[0]:
+        raise ValueError("The recorded reply does not quote the stored sentence before its task")
+    lead, sentence, rest = paragraphs[0].partition(quoted["original"])
+    lead, rest = lead.rstrip(), rest.strip()
+    if lead[-1:] in QUOTATION_MARKS and rest[:1] in QUOTATION_MARKS:
+        # The quotation marks around the sentence stay with it.
+        lead, sentence = lead[:-1].rstrip(), f"{lead[-1]}{sentence}{rest[0]}"
+    changed = [word for word in quoted["original"].rstrip(".").split()
+               if word not in quoted["corrected"].rstrip(".").split()]
+    return {"greeting": plain(before.replace("```text", "")), "card": card.splitlines(),
+            "lead": lead, "sentence": sentence, "changed": changed, "task": paragraphs[1]}
+
+
+def render_session(session: dict, font_path: Path) -> Image.Image:
+    width = 1600
+    label = ImageFont.truetype(str(font_path), 30)
+    title = ImageFont.truetype(str(font_path), 64)
+    mono = ImageFont.truetype(str(font_path), 34)
+    top, line_height, pad = 262, 50, 48
+    inner = width - 128 - 2 * pad
+    task = wrap_text(session["task"], mono, inner)
+    card = session["card"]
+    if max(mono.getlength(line) for line in card + [session["lead"], session["sentence"]]) > inner:
+        raise ValueError("The recorded opening does not fit the image")
+    # Greeting, board, quoted sentence, and task, separated by one empty line each.
+    rows = 1 + 1 + len(card) + 1 + 2 + 1 + len(task)
+    bottom = top + 80 + line_height * rows - 14
+    image = Image.new("RGB", (width, bottom + 140), COLORS["page"])
+    draw = ImageDraw.Draw(image)
+    draw_header(draw, width, "A NEW CHAT / FOUR MONTHS IN", "It starts with your own sentence.", label, title)
+    draw.rounded_rectangle((64, top, width - 64, bottom), radius=24, fill=COLORS["panel"], outline=COLORS["border"], width=2)
+
+    left, y = 64 + pad, top + 40
+    draw.text((left, y), session["greeting"], font=mono, fill=COLORS["text"])
+    y += 2 * line_height
+    draw_card(draw, card, left, y, mono, line_height)
+    y += (len(card) + 1) * line_height
+    draw.text((left, y), session["lead"], font=mono, fill=COLORS["muted"])
+    y += line_height
+    x = left
+    for part in re.findall(r"\s+|\S+", session["sentence"]):
+        marked = part.strip(".,?!:;" + QUOTATION_MARKS) in session["changed"]
+        draw.text((x, y), part, font=mono, fill=COLORS["red"])
+        if marked:
+            draw.line((x, y + 40, x + mono.getlength(part), y + 40), fill=COLORS["red"], width=3)
+        x += mono.getlength(part)
+    y += 2 * line_height
+    for line in task:
+        draw.text((left, y), line, font=mono, fill=COLORS["text"])
+        y += line_height
+    draw.text((64, bottom + 34), "Your patterns, a sentence you got wrong, and a new situation for it.",
+              font=label, fill=COLORS["text"])
+    draw.text((64, bottom + 78), "Actual Claude Code reply / scripted learner history", font=label, fill=COLORS["muted"])
     return image
 
 
@@ -276,25 +384,35 @@ def render_frame(screen: dict, index: int, count: int, font_path: Path, *,
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--story", choices=("history", "learning-loop", "conversation", "board"), default="learning-loop")
-    parser.add_argument("--output", type=Path, help="Output GIF; a static PNG is saved beside it (board: the PNG itself)")
+    parser.add_argument("--story", choices=("history", "learning-loop", "conversation", "board", "session", "social"),
+                        default="learning-loop")
+    parser.add_argument("--output", type=Path,
+                        help="Output GIF; a static PNG is saved beside it (board, session, social: the PNG itself)")
     parser.add_argument("--font", help="Path to a monospaced TrueType font")
     parser.add_argument("--frames-dir", type=Path, help="Save full-size and 309 px wide PNGs for review")
-    parser.add_argument("--transcript", type=Path, default=ROOT / "demo" / "conversation.json")
+    parser.add_argument("--transcript", type=Path,
+                        help="Recording to replay (default: demo/conversation.json, or demo/session.json for session)")
     arguments = parser.parse_args(argv)
     font = find_font(arguments.font)
-    if arguments.story == "board":
-        output = arguments.output or ROOT / "demo" / "board.png"
+    if arguments.story in ("board", "session", "social"):
+        output = arguments.output or ROOT / "demo" / f"{arguments.story}.png"
         output.parent.mkdir(parents=True, exist_ok=True)
-        render_board(*collect_board(), font).save(output)
-        print(f"Rendered the session board to {output}")
+        if arguments.story == "board":
+            image, name = render_board(*collect_board(), font), "session board"
+        elif arguments.story == "social":
+            image, name = render_social(collect_board()[1], font), "social preview"
+        else:
+            source = arguments.transcript or ROOT / "demo" / "session.json"
+            image, name = render_session(collect_session(source), font), "recorded opening"
+        image.save(output)
+        print(f"Rendered the {name} to {output}")
         return 0
     if arguments.story == "learning-loop":
         screens, filename = collect_learning_screens(), "learning-loop"
     elif arguments.story == "history":
         screens, filename = collect_history_screens(), "deutschdna"
     else:
-        screens, filename = collect_conversation_screens(arguments.transcript), "conversation"
+        screens, filename = collect_conversation_screens(arguments.transcript or ROOT / "demo" / "conversation.json"), "conversation"
     frames, durations, complete = [], [], []
     for index, screen in enumerate(screens):
         conversation = arguments.story == "conversation"

@@ -27,9 +27,11 @@ python scripts/render_demo_gif.py --story learning-loop
 python scripts/render_demo_gif.py --story history
 python scripts/render_demo_gif.py --story conversation
 python scripts/render_demo_gif.py --story board
+python scripts/render_demo_gif.py --story session
+python scripts/render_demo_gif.py --story social
 ```
 
-Each story command writes a GIF and a static PNG under `demo/`; `board` writes only `demo/board.png`, a 1600 × 900 image of the four-month learner's session board that also works as a social preview. Its review ladders and comeback markers are drawn, so any monospaced font renders them. Pass `--frames-dir demo-home/frames` to inspect every complete scene at its full size and at the 309 px width used in the mobile review. Text that exceeds the layout raises an error instead of being silently clipped or shrunk.
+Each story command writes a GIF and a static PNG under `demo/`. Three stories write a single PNG: `board` is a 1600 × 900 image of the four-month learner's session board, `session` is the README's opening image, drawn from the [recorded session](../demo/session.json), and `social` is the board at 1280 × 640 for the repository's social preview (Settings → General → Social preview). Review ladders and comeback markers are drawn, so any monospaced font renders them. Pass `--frames-dir demo-home/frames` to inspect every complete scene at its full size and at the 309 px width used in the mobile review. Text that exceeds the layout raises an error instead of being silently clipped or shrunk.
 
 The learning-loop story opens on the result and lasts 11 seconds. The history story opens on the returning mistake and lasts 9 seconds. Both use scripted learner inputs and actual engine state, with dates anchored to the render day. The conversation replay lasts 16 seconds and reveals each learner message before its tutor reply.
 
@@ -65,4 +67,32 @@ Completed turns are read from their logs rather than requested again. Review the
 
 ```bash
 python scripts/render_demo_gif.py --story conversation --transcript demo-home/new-conversation.json --output demo-home/new-conversation.gif
+```
+
+## Record a returning learner's session
+
+The README's opening image shows how a chat starts after four months. The history is seeded through the engine by `scripts/demo.py`; the tutor's replies are actual Claude Code replies. It takes two steps, because the learner's answer depends on the task the tutor sets:
+
+```bash
+python evals/record_session.py
+```
+
+Read the task in the printed reply, write a fitting answer, and continue the same chat:
+
+```bash
+python evals/record_session.py --resume-run demo-home/session-XXXXXXXX --answer "..." --output demo-home/new-session.json
+```
+
+The script makes two real host calls and uses the same isolation as the conversation capture. It fails if the opening does not show the engine's board and the stored sentence, or if the answer was not saved as a review of the quoted pattern. Render the image from the new recording:
+
+```bash
+python scripts/render_demo_gif.py --story session --transcript demo-home/new-session.json --output demo-home/new-session.png
+```
+
+## Plugin manifest
+
+`.claude-plugin/plugin.json` and `.claude-plugin/marketplace.json` make the repository installable as a Claude Code plugin. The version in `plugin.json` must match `metadata.version` in `SKILL.md`; a unit test checks this. Claude Code keeps users on a version until it changes, so raise both with every release. Check the manifests with:
+
+```bash
+claude plugin validate .
 ```

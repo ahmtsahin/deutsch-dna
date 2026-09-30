@@ -1,0 +1,15 @@
+{
+  "name": "deutsch-dna",
+  "description": "DeutschDNA, a German tutor with memory for Claude Code",
+  "owner": {
+    "name": "Ahmet Sahin",
+    "url": "https://github.com/ahmtsahin"
+  },
+  "plugins": [
+    {
+      "name": "deutsch-dna",
+      "source": "./",
+      "description": "A German tutor that remembers your mistakes, brings each one back in a new sentence, and keeps the hint that helped."
+    }
+  ]
+}

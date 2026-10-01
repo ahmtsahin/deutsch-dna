@@ -22,6 +22,8 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
+from scenario_catalog import SCENARIOS, SCENARIO_ALIASES, mission_steps, scenario_examples
+
 try:
     import fcntl
 except ImportError:  # Windows
@@ -53,7 +55,7 @@ TIMELINE_LIMIT = 16
 FULL_PROFILE_INTERVAL_DAYS = 7
 STARTING_POINTS = frozenset({"beginner", "some", "comfortable", "unsure"})
 CEFR_LEVELS = frozenset({"A1", "A2", "B1", "B2", "C1", "C2"})
-SCENARIO_ALIASES = {"work": "arbeit", "doctor": "arzt", "housing": "wohnung", "everyday": "alltag"}
+MISSION_SCHEMA_VERSION = 1
 BOARD_ROWS = 5
 LABEL_WIDTH = 36
 LABEL_MAX_LENGTH = 60
@@ -116,44 +118,6 @@ PATTERN_ALIASES = {
     "regiert": "+",
 }
 DROPPED_PATTERN_TOKENS = frozenset({"case", "kasus", "the"})
-SCENARIOS: dict[str, dict[str, Any]] = {
-    "alltag": {
-        "assistant_role": "a helpful neighbor",
-        "setting": "A short everyday encounter in Germany",
-        "opening": "Hallo! Wir haben uns lange nicht gesehen. Wie geht es dir?",
-        "learner_goal": "Keep a natural everyday exchange going and ask one follow-up question.",
-        "suggested_turns": 8,
-    },
-    "arbeit": {
-        "assistant_role": "a colleague who needs a clear update",
-        "setting": "A German workplace conversation",
-        "opening": "Guten Morgen. Kannst du mir kurz sagen, wie der aktuelle Stand ist?",
-        "learner_goal": "Explain a status, a problem, and the next step politely.",
-        "suggested_turns": 8,
-    },
-    "arzt": {
-        "assistant_role": "a doctor asking language-practice questions",
-        "setting": "A fictional doctor's appointment for language practice only",
-        "opening": "Guten Tag. Was kann ich heute für Sie tun?",
-        "learner_goal": "Describe symptoms, duration, and intensity, then answer follow-up questions.",
-        "suggested_turns": 8,
-        "safety_note": "This is language practice, not medical advice or diagnosis.",
-    },
-    "wohnung": {
-        "assistant_role": "a landlord or property manager",
-        "setting": "A flat viewing or repair conversation",
-        "opening": "Guten Tag. Möchten Sie zuerst die Wohnung besichtigen oder haben Sie eine Frage?",
-        "learner_goal": "Ask precise questions and explain one housing need or problem.",
-        "suggested_turns": 8,
-    },
-    "restaurant": {
-        "assistant_role": "a waiter in a busy restaurant",
-        "setting": "A restaurant visit from arrival to payment",
-        "opening": "Guten Abend. Haben Sie reserviert?",
-        "learner_goal": "Handle the reservation, order, one special request, and payment.",
-        "suggested_turns": 8,
-    },
-}
 
 
 class DeutschDNAError(Exception):
@@ -223,6 +187,32 @@ def local_date(moment: datetime) -> date:
 def local_iso(stamp: str | None) -> str | None:
     parsed = _safe_moment(stamp)
     return to_local(parsed).isoformat() if parsed else None
+
+
+def parse_deadline(value: str | None, moment: datetime) -> str | None:
+    """Resolve a stated date on the learner's local calendar, without guessing an event time."""
+    if value is None or not value.strip():
+        return None
+    text = value.strip().casefold()
+    today = local_date(moment)
+    if text in {"today", "heute", "bugün", "bugun"}:
+        return today.isoformat()
+    if text in {"tomorrow", "morgen", "yarın", "yarin"}:
+        return (today + timedelta(days=1)).isoformat()
+    weekdays = {
+        "monday": 0, "montag": 0, "pazartesi": 0, "tuesday": 1, "dienstag": 1, "salı": 1, "sali": 1,
+        "wednesday": 2, "mittwoch": 2, "çarşamba": 2, "carsamba": 2, "thursday": 3, "donnerstag": 3, "perşembe": 3, "persembe": 3,
+        "friday": 4, "freitag": 4, "cuma": 4, "saturday": 5, "samstag": 5, "cumartesi": 5,
+        "sunday": 6, "sonntag": 6, "pazar": 6,
+    }
+    if text in weekdays:
+        return (today + timedelta(days=(weekdays[text] - today.weekday()) % 7)).isoformat()
+    if re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        try:
+            return date.fromisoformat(text).isoformat()
+        except ValueError:
+            pass
+    raise DeutschDNAError("Deadline must be YYYY-MM-DD, today/tomorrow, or a weekday in English, German, or Turkish")
 
 
 def _safe_moment(value: str | None) -> datetime | None:
@@ -865,6 +855,34 @@ def session_debrief(
     }
 
 
+def mission_view(mission: dict[str, Any], moment: datetime, sessions: list[dict[str, Any]]) -> dict[str, Any]:
+    index = int(mission.get("step_index", 0))
+    steps = mission["steps"]
+    attempts = mission.get("attempts") or []
+    assessed = {attempt["session_id"] for attempt in attempts}
+    pending = [session for session in sessions if session.get("mission_id") == mission["id"] and session["id"] not in assessed]
+    session = max(pending, key=lambda item: item["started_at"]) if pending else None
+    status = mission["status"]
+    next_action = {"active": "start_scene", "completed": "mission_complete", "cancelled": "mission_cancelled"}[status]
+    if status == "active" and session:
+        next_action = {"active": "resume_scene", "debriefing": "present_debrief", "complete": "assess_mission"}[session["status"]]
+    deadline = mission.get("deadline")
+    remaining = (date.fromisoformat(deadline) - local_date(moment)).days if deadline else None
+    last = attempts[-1] if attempts else None
+    return {"id": mission["id"], "goal": mission["goal"], "scenario": mission["scenario"],
+            "scenario_title": SCENARIOS[mission["scenario"]]["title"], "status": status,
+            "deadline": deadline, "days_remaining": remaining, "overdue": status == "active" and remaining is not None and remaining < 0,
+            "completed_steps": index, "total_steps": len(steps), "attempts": len(attempts),
+            "current_step": {key: steps[index][key] for key in ("id", "label", "goal", "criteria", "difficulty")} if index < len(steps) else None,
+            "steps": [{"id": step["id"], "label": step["label"], "goal": step["goal"],
+                       "status": "completed" if number < index else "current" if number == index and status == "active" else "upcoming"}
+                      for number, step in enumerate(steps)],
+            "last_attempt": {**copy.deepcopy(last), "at_local": local_iso(last["at"])} if last else None,
+            "pending_session_id": session["id"] if session and status == "active" else None,
+            "next_action": next_action, "completed_at_local": local_iso(mission.get("completed_at")),
+            "completion_basis": "Completed communication-practice steps; not a proficiency or readiness certificate."}
+
+
 def _event_moments(
     mistakes: list[dict[str, Any]], sessions: list[dict[str, Any]], profile: dict[str, Any] | None = None,
     words: list[dict[str, Any]] | None = None,
@@ -1066,6 +1084,7 @@ class StateStore:
         self.mistakes_path = home / "mistakes.json"
         self.sessions_path = home / "sessions.json"
         self.vocabulary_path = home / "vocabulary.json"
+        self.missions_path = home / "missions.json"
 
     # ---- documents
 
@@ -1144,6 +1163,12 @@ class StateStore:
             raise DeutschDNAError(f"Expected a sessions list in {self.sessions_path}")
         return drop_legacy_fields(document)
 
+    def _mission_document(self) -> dict[str, Any]:
+        document = _read_json(self.missions_path, {"schema_version": MISSION_SCHEMA_VERSION, "missions": []})
+        if not isinstance(document.get("missions"), list):
+            raise DeutschDNAError(f"Expected a missions list in {self.missions_path}")
+        return document
+
     @staticmethod
     def _require_session(document: dict[str, Any], identifier: str) -> dict[str, Any]:
         session = next((item for item in document["sessions"] if item.get("id") == identifier), None)
@@ -1211,7 +1236,7 @@ class StateStore:
             if session.get("focus_id") == old_id:
                 session["focus_id"] = new_id
                 change["focus_id"] = True
-            for field in ("known_pattern_ids", "mistake_ids"):
+            for field in ("known_pattern_ids", "mistake_ids", "mission_focus_ids"):
                 values = session.get(field) or []
                 if old_id in values:
                     change[field] = list(values)
@@ -1257,6 +1282,10 @@ class StateStore:
                 session["known_pattern_ids"] = StateStore._put_back(
                     session.get("known_pattern_ids") or [], before, source_id, target_id, keep_target=target_id in before
                 )
+            if "mission_focus_ids" in change:
+                before = change["mission_focus_ids"]
+                session["mission_focus_ids"] = StateStore._put_back(
+                    session.get("mission_focus_ids") or [], before, source_id, target_id, keep_target=target_id in before)
             # A scene finished after the merge listed the target for the source's feedback.
             if "mistake_ids" in change or (restored and session.get("mistake_ids")):
                 before = change.get("mistake_ids") or []
@@ -2127,6 +2156,8 @@ class StateStore:
             "profile": profile_view(profile),
             "onboarding": onboarding_view(profile, has_activity=last is not None),
             "active_roleplay": {"status": active_scene["status"], "scenario": active_scene["scenario"],
+                                **({"mission_id": active_scene["mission_id"], "mission_step_id": active_scene["mission_step_id"]}
+                                   if active_scene.get("mission_id") else {}),
                                 **session_timing(active_scene, moment)} if active_scene else None,
             "last_roleplay": {"session_id": last_scene["id"], "scenario": last_scene["scenario"],
                               "ended_at_local": local_iso(last_scene.get("ended_at")),
@@ -2154,12 +2185,195 @@ class StateStore:
             "mastered_total": sum(item.get("status") == "mastered" for item in mistakes),
             "schedule": schedule,
             "full_profile_due": full_profile_due,
+            "missions": self.mission_list(at=moment),
             "board": board,
             "board_more": max(0, len(ranked) - len(board)),
             "vocabulary": vocabulary_overview(words, moment),
         }
         result["card"] = render_recap_card(result)
         return result
+
+    # ---- continuing real-life missions
+
+    def mission_create(self, *, goal: str, scenario: str, deadline: str | None = None,
+                       at: datetime | None = None) -> dict[str, Any]:
+        moment = at or utc_now()
+        goal = goal.strip()
+        scenario = SCENARIO_ALIASES.get(scenario, scenario)
+        if not goal or scenario not in SCENARIOS:
+            raise DeutschDNAError("Provide a real learner-stated goal and a supported scenario")
+        resolved = parse_deadline(deadline, moment)
+        document = self._mission_document()
+        existing = next((item for item in document["missions"] if item["status"] == "active"
+                         and normalized(item["goal"]) == normalized(goal) and item["scenario"] == scenario
+                         and item.get("deadline") == resolved), None)
+        if existing:
+            return {"status": "existing", "mission": self.mission_show(existing["id"], at=moment)}
+        self.ensure()
+        mission = {"id": f"g_{uuid.uuid4().hex[:12]}", "goal": goal, "scenario": scenario, "deadline": resolved,
+                   "created_at": iso(moment), "updated_at": iso(moment), "status": "active", "step_index": 0,
+                   "steps": mission_steps(scenario), "attempts": [], "completed_at": None}
+        document["missions"].append(mission)
+        _atomic_write(self.missions_path, document)
+        return {"status": "created", "mission": self.mission_show(mission["id"], at=moment)}
+
+    @staticmethod
+    def _require_mission(document: dict[str, Any], identifier: str) -> dict[str, Any]:
+        mission = next((item for item in document["missions"] if item.get("id") == identifier), None)
+        if mission is None:
+            raise DeutschDNAError(f"Unknown mission ID: {identifier}")
+        return mission
+
+    def mission_show(self, identifier: str, *, at: datetime | None = None) -> dict[str, Any]:
+        mission = self._require_mission(self._mission_document(), identifier)
+        sessions = _read_json(self.sessions_path, {"sessions": []})["sessions"]
+        return mission_view(mission, at or utc_now(), sessions)
+
+    def mission_list(self, *, status: str = "active", at: datetime | None = None) -> list[dict[str, Any]]:
+        if status not in {"active", "completed", "cancelled", "all"}:
+            raise DeutschDNAError("Unknown mission status")
+        moment = at or utc_now()
+        sessions = _read_json(self.sessions_path, {"sessions": []})["sessions"]
+        missions = [mission_view(item, moment, sessions) for item in self._mission_document()["missions"]
+                    if status == "all" or item["status"] == status]
+        return sorted(missions, key=lambda item: (item.get("deadline") or "9999-12-31", item["goal"]))
+
+    def mission_start(self, identifier: str, *, minutes: int = 5, input_mode: str = "text",
+                      at: datetime | None = None) -> dict[str, Any]:
+        moment = at or utc_now()
+        mission = self._require_mission(self._mission_document(), identifier)
+        view = self.mission_show(identifier, at=moment)
+        if not 1 <= minutes <= 60 or input_mode not in {"text", "transcript"}:
+            raise DeutschDNAError("Use 1–60 minutes and text/transcript input")
+        if moment < parse_moment(mission["updated_at"]):
+            raise DeutschDNAError("A mission scene cannot precede its saved progress")
+        if mission["status"] != "active":
+            raise DeutschDNAError("This mission is not active")
+        index = mission["step_index"]
+        step = mission["steps"][index]
+        sessions = self._session_document()["sessions"]
+        # A scene is the sole durable link to a mission, so interrupted starts never orphan an attempt.
+        if view["pending_session_id"]:
+            pending = self.roleplay_show(view["pending_session_id"], at=moment)
+            return {"status": "resume", **pending, "mission": view, "next_action": view["next_action"]}
+        unfinished = [item for item in sessions if item.get("status") in {"active", "debriefing"}]
+        if unfinished:
+            raise DeutschDNAError(f"Finish or resume scene {unfinished[-1]['id']} before starting a mission scene")
+        attempts = mission.get("attempts") or []
+        last = attempts[-1] if attempts else None
+        previous_scene = next((item for item in sessions if last and item["id"] == last["session_id"]), None)
+        mistakes = self._mistake_document()["mistakes"]
+        active = [item for item in mistakes if item.get("status") == "active"]
+        previous_corrections = session_debrief(previous_scene, mistakes)["corrections"] if previous_scene else []
+        previous_ids = {row["mistake_id"] for row in previous_corrections}
+        ranked = sorted(active, key=lambda item: (item["id"] not in previous_ids, not _is_due(item, moment),
+                                                 -int(item.get("occurrences", 0)), item["id"]))
+        focus_patterns = [compact(item) for item in ranked[:3]]
+        repeat = sum(attempt["step_id"] == step["id"] for attempt in attempts)
+        context = {"mission_id": identifier, "step": copy.deepcopy(step), "step_index": index,
+                   "mission": view, "focus_patterns": focus_patterns,
+                   "opening": step["openings"][repeat % len(step["openings"])],
+                   "adaptation": {"mode": "repair" if last and last["result"] == "practice" else "challenge" if last else "start",
+                                  "previous_result": last["result"] if last else None,
+                                  "previous_support": last["support"] if last else None,
+                                  "previous_evidence": copy.deepcopy(last["evidence"]) if last else [],
+                                  "previous_note": last["note"] if last else None,
+                                  "previous_corrections": previous_corrections,
+                                  "policy": "Use a new situation. On repair, break the same goal into smaller prompts and keep useful hints in reserve. On progress, add one new complication. Weave recorded focus patterns in naturally; do not assume new personal facts."}}
+        result = self.roleplay_start(mission["scenario"], minutes=minutes, input_mode=input_mode,
+                                     at=moment, _mission_context=context)
+        return {"status": "started", **result, "mission": self.mission_show(identifier, at=moment)}
+
+    def mission_assess(self, identifier: str, *, session_id: str, result: str, support: str,
+                       evidence_turn_ids: list[str], note: str, at: datetime | None = None) -> dict[str, Any]:
+        moment = at or utc_now()
+        if result not in {"achieved", "practice"} or support not in {"none", "hint", "shown"} or not note.strip():
+            raise DeutschDNAError("Provide achieved/practice, the actual support, and a grounded assessment note")
+        document = self._mission_document()
+        mission = self._require_mission(document, identifier)
+        session = self._require_session(self._session_document(), session_id)
+        if session.get("mission_id") != identifier or session.get("status") != "complete":
+            raise DeutschDNAError("Assess a completed scene belonging to this mission")
+        if moment < parse_moment(session.get("finished_at") or session["ended_at"]):
+            raise DeutschDNAError("A mission assessment cannot precede its completed scene")
+        ids = list(dict.fromkeys(evidence_turn_ids))
+        if not ids:
+            raise DeutschDNAError("An assessment needs actual learner turn IDs as evidence")
+        turns = {turn["id"]: turn for turn in session.get("utterances", [])}
+        if any(key not in turns or turns[key]["speaker"] != "learner" for key in ids):
+            raise DeutschDNAError("Evidence must cite real learner turns from this scene")
+        observed = {turn.get("support", "none") for turn in session.get("utterances", []) if turn["speaker"] == "partner"}
+        actual_support = "shown" if "shown" in observed or support == "shown" else "hint" if "hint" in observed or support == "hint" else "none"
+        if result == "achieved" and actual_support != "none":
+            raise DeutschDNAError("A supported scene cannot count as achieved unaided; use practice")
+        attempts = mission["attempts"]
+        previous = next((attempt for attempt in attempts if attempt["session_id"] == session_id), None)
+        if previous:
+            if (previous["result"], previous["support"], previous["note"], [row["turn_id"] for row in previous["evidence"]]) != (result, actual_support, note.strip(), ids):
+                raise DeutschDNAError("This scene was already assessed differently; undo the latest mission assessment first")
+            return {"status": "duplicate", "mission": self.mission_show(identifier, at=moment)}
+        if moment < parse_moment(mission["updated_at"]):
+            raise DeutschDNAError("An assessment cannot precede saved mission progress")
+        if mission["status"] != "active" or session.get("mission_step_id") != mission["steps"][mission["step_index"]]["id"]:
+            raise DeutschDNAError("This scene does not belong to the mission's current step")
+        pending = self.mission_show(identifier, at=moment)["pending_session_id"]
+        if pending != session_id:
+            raise DeutschDNAError("Assess the mission's pending scene before any other scene")
+        attempt = {"session_id": session_id, "step_id": session["mission_step_id"], "result": result,
+                   "support": actual_support, "note": note.strip(), "at": iso(moment),
+                   "previous_index": mission["step_index"],
+                   "evidence": [{"turn_id": key, "text": turns[key]["text"], "at": turns[key]["at"]} for key in ids]}
+        attempts.append(attempt)
+        if result == "achieved":
+            mission["step_index"] += 1
+            if mission["step_index"] == len(mission["steps"]):
+                mission["status"] = "completed"
+                mission["completed_at"] = iso(moment)
+        mission["updated_at"] = iso(moment)
+        _atomic_write(self.missions_path, document)
+        return {"status": "assessed", "mission": self.mission_show(identifier, at=moment)}
+
+    def mission_undo(self, identifier: str, *, at: datetime | None = None) -> dict[str, Any]:
+        moment = at or utc_now()
+        document = self._mission_document()
+        mission = self._require_mission(document, identifier)
+        if mission["status"] == "cancelled" or not mission["attempts"]:
+            raise DeutschDNAError("No mission assessment to undo")
+        if moment < parse_moment(mission["updated_at"]):
+            raise DeutschDNAError("Undo cannot precede saved mission progress")
+        pending = self.mission_show(identifier, at=moment)["pending_session_id"]
+        if pending:
+            raise DeutschDNAError("Assess the newer pending scene before undoing the latest assessment")
+        undone = mission["attempts"].pop()
+        mission.update(step_index=undone["previous_index"], status="active", completed_at=None, updated_at=iso(moment))
+        _atomic_write(self.missions_path, document)
+        return {"status": "undone", "session_id": undone["session_id"], "mission": self.mission_show(identifier, at=moment)}
+
+    def mission_update(self, identifier: str, *, goal: str | None = None, deadline: str | None = None,
+                       cancel: bool = False, at: datetime | None = None) -> dict[str, Any]:
+        moment = at or utc_now()
+        document = self._mission_document()
+        mission = self._require_mission(document, identifier)
+        if mission["status"] != "active":
+            raise DeutschDNAError("Only an active mission can be updated")
+        if moment < parse_moment(mission["updated_at"]):
+            raise DeutschDNAError("An update cannot precede saved mission progress")
+        if goal is None and deadline is None and not cancel:
+            raise DeutschDNAError("Provide a goal, deadline, or --cancel")
+        if goal is not None:
+            if not goal.strip():
+                raise DeutschDNAError("A mission goal cannot be empty")
+            mission["goal"] = goal.strip()
+        if deadline is not None:
+            mission["deadline"] = parse_deadline(deadline, moment)
+        if cancel:
+            pending = self.mission_show(identifier, at=moment)["pending_session_id"]
+            if pending and self.roleplay_show(pending)["session"]["status"] != "complete":
+                raise DeutschDNAError("End and finish the current scene before cancelling its mission")
+            mission["status"] = "cancelled"
+        mission["updated_at"] = iso(moment)
+        _atomic_write(self.missions_path, document)
+        return {"status": "updated", "mission": self.mission_show(identifier, at=moment)}
 
     # ---- roleplay
 
@@ -2171,6 +2385,7 @@ class StateStore:
         minutes: int = 5,
         input_mode: str = "text",
         at: datetime | None = None,
+        _mission_context: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         scenario = SCENARIO_ALIASES.get(scenario, scenario)
         if scenario not in SCENARIOS:
@@ -2181,6 +2396,9 @@ class StateStore:
             raise DeutschDNAError("input_mode must be text or transcript")
         moment = at or utc_now()
         focus_pattern = None
+        if not focus and _mission_context and _mission_context["focus_patterns"]:
+            focus_pattern = _mission_context["focus_patterns"][0]
+            focus = focus_pattern["label"]
         if not focus:
             due = self.due(at=moment, limit=1)
             active = [item for item in self._mistake_document()["mistakes"] if item.get("status") == "active"]
@@ -2188,7 +2406,7 @@ class StateStore:
             if target:
                 focus_pattern = compact(target)
                 focus = focus_pattern["label"]
-        goal = self._profile().get("goal")
+        goal = _mission_context["mission"]["goal"] if _mission_context else self._profile().get("goal")
         document = self._session_document()
         session = {
             "id": f"s_{uuid.uuid4().hex[:12]}",
@@ -2210,6 +2428,8 @@ class StateStore:
             "duration_seconds": None,
             "mistake_ids": [],
             "notes": None,
+            **({"mission_id": _mission_context["mission_id"], "mission_step_id": _mission_context["step"]["id"],
+                "mission_focus_ids": [item["id"] for item in _mission_context["focus_patterns"]]} if _mission_context else {}),
         }
         document["sessions"].append(session)
         _atomic_write(self.sessions_path, document)
@@ -2224,22 +2444,28 @@ class StateStore:
                 "target_seconds": minutes * 60,
                 "input_mode": input_mode,
                 "timing_policy": "At the next learner turn after the target, close naturally unless they want to continue. Elapsed session time is not speaking time.",
+                **({"mission": _mission_context["mission"], "mission_step": _mission_context["step"],
+                    "opening": _mission_context["opening"], "learner_goal": _mission_context["step"]["goal"],
+                    "focus_patterns": _mission_context["focus_patterns"], "adaptation": _mission_context["adaptation"]}
+                   if _mission_context else {}),
             },
         }
 
     def roleplay_turn(
-        self, identifier: str, *, speaker: str, text: str, event_id: str | None = None, at: datetime | None = None,
+        self, identifier: str, *, speaker: str, text: str, event_id: str | None = None, support: str = "none", at: datetime | None = None,
     ) -> dict[str, Any]:
         """Store one actual utterance. There is no correction or grading on this path."""
         if speaker not in {"learner", "partner"} or not text.strip():
             raise DeutschDNAError("Provide a learner or partner speaker and nonempty text")
+        if support not in {"none", "hint", "shown"} or (speaker != "partner" and support != "none"):
+            raise DeutschDNAError("Only a partner turn can record hint/shown support")
         moment = at or utc_now()
         document = self._session_document()
         session = self._require_session(document, identifier)
         utterances = session.get("utterances", [])
         retry = next((turn for turn in utterances if event_id and turn.get("event_id") == event_id), None)
         if retry:
-            if retry["text"] != text or retry["speaker"] != speaker:
+            if retry["text"] != text or retry["speaker"] != speaker or retry.get("support", "none") != support:
                 raise DeutschDNAError("This turn event ID already belongs to a different utterance")
             return {"status": "duplicate", "utterance": retry, **session_timing(session, moment)}
         if speaker == "learner" and is_scene_end_request(text):
@@ -2252,9 +2478,11 @@ class StateStore:
             raise DeutschDNAError("A turn cannot precede the scene or its previous turn")
         if not event_id and utterances:
             latest = utterances[-1]
-            if latest["speaker"] == speaker and latest["text"] == text and within(latest["at"], moment, DUPLICATE_EVENT_WINDOW):
+            if latest["speaker"] == speaker and latest["text"] == text and latest.get("support", "none") == support and within(latest["at"], moment, DUPLICATE_EVENT_WINDOW):
                 return {"status": "duplicate", "utterance": latest, **session_timing(session, moment)}
         turn = {"id": f"t_{uuid.uuid4().hex[:12]}", "speaker": speaker, "text": text, "at": iso(moment), "event_id": event_id}
+        if support != "none":
+            turn["support"] = support
         session.setdefault("utterances", []).append(turn)
         _atomic_write(self.sessions_path, document)
         return {"status": "stored", "utterance": turn, **session_timing(session, moment)}
@@ -3018,6 +3246,116 @@ TEXT_RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {
 CARD_RENDERERS: dict[str, Callable[[dict[str, Any]], str]] = {"recap": render_recap_card}
 
 
+# --------------------------------------------------------------------------- portable learning dashboard
+
+
+def dashboard_snapshot(store: StateStore, *, at: datetime | None = None) -> dict[str, Any]:
+    """Project saved evidence without initializing, migrating on disk, or grading anything."""
+    moment = at or utc_now()
+    profile = _read_json(store.profile_path, {})
+    document = _read_json(store.mistakes_path, {"schema_version": SCHEMA_VERSION, "mistakes": []})
+    if not isinstance(document.get("mistakes"), list):
+        raise DeutschDNAError(f"Expected a mistakes list in {store.mistakes_path}")
+    mistakes = _migrate_mistakes(drop_legacy_fields(document))["mistakes"]
+    patterns = []
+    for mistake in mistakes:
+        row = compact(mistake)
+        events: list[dict[str, Any]] = []
+        known: set[tuple[str, str, str]] = set()
+
+        def add(kind: str, stamp: str | None, sentence: str | None, **details: Any) -> None:
+            if not stamp or not _safe_moment(stamp):
+                return
+            key = (kind, stamp, sentence or "")
+            if key in known:
+                return
+            known.add(key)
+            events.append({"kind": kind, "at": stamp, "at_local": local_iso(stamp),
+                           "sentence": sentence, **details})
+
+        first = mistake.get("first_example")
+        for example in ([first] if first else []) + list(mistake.get("examples") or []):
+            add("error", example.get("seen_at"), example.get("original"), corrected=example.get("corrected"))
+        for entry in list(mistake.get("coaching_history") or []) + ([mistake["helpful_hint"]] if mistake.get("helpful_hint") else []):
+            kind = {"independent": "practice", "assisted": "assisted", "shown": "shown", "miss": "miss"}[entry["outcome"]]
+            add(kind, entry.get("at"), entry.get("answer"), hint=entry.get("hint"),
+                strategy=entry.get("strategy"), prompt=entry.get("prompt"))
+        for entry in mistake.get("correct_use_history") or []:
+            add("spontaneous", entry.get("observed_at"), entry.get("context"))
+        for entry in mistake.get("review_history") or []:
+            if entry.get("source", "review") != "review":
+                continue  # A spontaneous use already has its own evidence above.
+            kind = {"pass": "review", "hard": "assisted" if entry.get("hint") else "hesitant", "fail": "error"}[entry["result"]]
+            add(kind, entry.get("reviewed_at"), entry.get("answer"), hint=entry.get("hint"),
+                strategy=entry.get("strategy"), prompt=entry.get("prompt"), corrected=entry.get("correction"))
+        proof = row["coaching"]["learning_proof"]
+        if proof:
+            supported, independent = proof["with_help"], proof["independent"]
+            add("assisted", supported.get("at"), supported.get("answer"), hint=supported.get("hint"),
+                strategy=supported.get("strategy"), prompt=supported.get("prompt"))
+            add({"spontaneous": "spontaneous", "review": "review", "practice": "practice"}[independent["source"]],
+                independent.get("at"), independent.get("answer"), prompt=independent.get("prompt"))
+        for field, kind in (("mastered_at", "mastered"), ("previously_mastered_at", "mastered"), ("reactivated_at", "returned")):
+            add(kind, mistake.get(field), None)
+        events.sort(key=lambda event: (parse_moment(event["at"]), event["kind"]))
+        row.update({"category_label": CATEGORY_LABELS.get(row["category"], row["category"]),
+                    "due": _is_due(mistake, moment), "events": events,
+                    "first_example_is_original": bool(first and first.get("seen_at") == mistake.get("first_seen")),
+                    "proof_has_later_error": bool(proof and _safe_moment(mistake.get("last_seen"))
+                                                  and parse_moment(mistake["last_seen"]) > parse_moment(proof["independent"]["at"]))})
+        patterns.append(row)
+    patterns.sort(key=lambda row: (not bool(row["coaching"]["learning_proof"]), not row["due"],
+                                   category_rank(row["category"]), row["label"]))
+    missions = store._mission_document()["missions"]
+    sessions = _read_json(store.sessions_path, {"sessions": []})["sessions"] if missions else []
+    return {"as_of": iso(moment), "as_of_local": local_iso(iso(moment)),
+            "profile": {"name": profile.get("name"), "level": profile.get("level")},
+            "counts": {"patterns": len(patterns), "due": sum(row["due"] for row in patterns),
+                       "mastered": sum(row["status"] == "mastered" for row in patterns),
+                       "milestones": sum(bool(row["coaching"]["learning_proof"]) for row in patterns)},
+            "patterns": patterns,
+            "missions": [mission_view(item, moment, sessions) for item in missions if item["status"] != "cancelled"],
+            "scenarios": scenario_examples()}
+
+
+def render_dashboard(payload: dict[str, Any]) -> str:
+    """Keep learner text inert, including a literal closing script tag or HTML markup."""
+    template = Path(__file__).with_name("dashboard.html").read_text(encoding="utf-8")
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    for original, escaped in (("&", "\\u0026"), ("<", "\\u003c"), (">", "\\u003e"),
+                              ("\u2028", "\\u2028"), ("\u2029", "\\u2029")):
+        data = data.replace(original, escaped)
+    return template.replace("__DEUTSCHDNA_DATA__", data)
+
+
+def write_dashboard(payload: dict[str, Any], output: Path, *, force: bool = False) -> dict[str, Any]:
+    output = output.expanduser().resolve()
+    if output.suffix.lower() not in {".html", ".htm"}:
+        raise DeutschDNAError("Dashboard output must end in .html or .htm")
+    if output == Path(__file__).with_name("dashboard.html").resolve():
+        raise DeutschDNAError("Choose an output outside the dashboard source template")
+    if output.exists() and not force:
+        raise DeutschDNAError(f"{output} already exists; choose another file or use --force")
+    temporary = output.parent / f".{output.name}.{uuid.uuid4().hex}.tmp"
+    try:
+        output.parent.mkdir(parents=True, exist_ok=True)
+        html = render_dashboard(payload)
+        with temporary.open("x", encoding="utf-8", newline="\n") as stream:
+            stream.write(html)
+        if force:
+            _replace_file(temporary, output)
+        else:
+            # An exclusive create also protects against another export arriving after exists().
+            with output.open("x", encoding="utf-8", newline="\n") as stream:
+                stream.write(html)
+    except OSError as exc:
+        raise DeutschDNAError(f"Could not export dashboard to {output}: {exc}") from exc
+    finally:
+        temporary.unlink(missing_ok=True)
+    return {"status": "exported", "path": str(output), "frames": len(payload["frames"]),
+            "patterns": payload["frames"][-1]["counts"]["patterns"], "demo": payload.get("demo", False)}
+
+
 # --------------------------------------------------------------------------- CLI
 
 
@@ -3153,6 +3491,42 @@ def build_parser() -> argparse.ArgumentParser:
     _add_format(summary_parser)
     _add_verbose(summary_parser)
 
+    dashboard_parser = subparsers.add_parser("dashboard", help="Export a self-contained, offline learning dashboard")
+    dashboard_parser.add_argument("--output", default="deutschdna-dashboard.html", help="HTML file to create")
+    dashboard_parser.add_argument("--force", action="store_true", help="Replace an existing HTML export")
+    dashboard_parser.add_argument("--at", help="Clock for due dates; does not reconstruct historical state")
+
+    subparsers.add_parser("scenarios", help="List roleplay frames, opening lines, and example situations")
+    mission_create_parser = subparsers.add_parser("mission-create", help="Plan continuing preparation for a learner-stated real-life goal")
+    mission_create_parser.add_argument("--goal", required=True)
+    mission_create_parser.add_argument("--scenario", required=True, choices=sorted(set(SCENARIOS) | set(SCENARIO_ALIASES)))
+    mission_create_parser.add_argument("--deadline", help="YYYY-MM-DD, today/tomorrow, or a weekday in English/German/Turkish")
+    mission_create_parser.add_argument("--at")
+    mission_list_parser = subparsers.add_parser("mission-list", help="List continuing preparation goals")
+    mission_list_parser.add_argument("--status", choices=("active", "completed", "cancelled", "all"), default="active")
+    mission_list_parser.add_argument("--at")
+    for name, help_text in (("mission-show", "Show saved preparation, the current step, and evidence"),
+                            ("mission-start", "Start or resume the next adaptive preparation scene"),
+                            ("mission-assess", "Assess a completed preparation scene using actual learner turns"),
+                            ("mission-undo", "Undo the latest preparation assessment"),
+                            ("mission-update", "Update a goal/deadline or cancel preparation")):
+        mission_parser = subparsers.add_parser(name, help=help_text)
+        mission_parser.add_argument("mission_id")
+        mission_parser.add_argument("--at")
+        if name == "mission-start":
+            mission_parser.add_argument("--minutes", type=int, default=5)
+            mission_parser.add_argument("--input-mode", choices=("text", "transcript"), default="text")
+        elif name == "mission-assess":
+            mission_parser.add_argument("--session-id", required=True)
+            mission_parser.add_argument("--result", choices=("achieved", "practice"), required=True)
+            mission_parser.add_argument("--support", choices=("none", "hint", "shown"), required=True)
+            mission_parser.add_argument("--evidence-turn-id", action="append", required=True)
+            mission_parser.add_argument("--note", required=True, help="Grounded judgment of the communication goal, not a proficiency score")
+        elif name == "mission-update":
+            mission_parser.add_argument("--goal")
+            mission_parser.add_argument("--deadline", help="Empty string clears the deadline")
+            mission_parser.add_argument("--cancel", action="store_true")
+
     recap_parser = subparsers.add_parser("recap", help="Summarize recent activity for a session opener")
     recap_parser.add_argument("--days", type=int, default=RECENT_DAYS)
     recap_parser.add_argument("--at", help="ISO-8601 recap time")
@@ -3183,6 +3557,7 @@ def build_parser() -> argparse.ArgumentParser:
     turn_parser.add_argument("--speaker", choices=("learner", "partner"), required=True)
     turn_parser.add_argument("--text", required=True)
     turn_parser.add_argument("--event-id", help="Stable message ID; repeat it only when retrying that message")
+    turn_parser.add_argument("--support", choices=("none", "hint", "shown"), default="none", help="Mark actual help on a partner turn")
     turn_parser.add_argument("--at")
 
     stop_parser = subparsers.add_parser("roleplay-stop", help="End the scene and freeze duration before preparing feedback")
@@ -3249,6 +3624,10 @@ def mistake_view(mistake: dict[str, Any], verbose: bool) -> dict[str, Any]:
 
 def run(arguments: argparse.Namespace) -> dict[str, Any]:
     store = StateStore(default_home(arguments.home))
+    if arguments.command == "scenarios":
+        return {"count": len(SCENARIOS), "scenarios": scenario_examples(), "aliases": SCENARIO_ALIASES}
+    if arguments.command == "dashboard" and not store.home.exists():
+        return _run_locked(store, arguments)  # An empty export must not create learner memory.
     with state_lock(store.home):
         return _run_locked(store, arguments)
 
@@ -3256,6 +3635,28 @@ def run(arguments: argparse.Namespace) -> dict[str, Any]:
 def _run_locked(store: StateStore, arguments: argparse.Namespace) -> dict[str, Any]:
     command = arguments.command
     verbose = getattr(arguments, "verbose", False)
+    if command == "dashboard":
+        snapshot = dashboard_snapshot(store, at=parse_moment(arguments.at))
+        return write_dashboard({"version": 1, "demo": False, "frames": [snapshot]},
+                               Path(arguments.output), force=arguments.force)
+    if command == "mission-create":
+        return store.mission_create(goal=arguments.goal, scenario=arguments.scenario, deadline=arguments.deadline, at=parse_moment(arguments.at))
+    if command == "mission-list":
+        rows = store.mission_list(status=arguments.status, at=parse_moment(arguments.at))
+        return {"count": len(rows), "missions": rows}
+    if command == "mission-show":
+        return {"mission": store.mission_show(arguments.mission_id, at=parse_moment(arguments.at))}
+    if command == "mission-start":
+        return store.mission_start(arguments.mission_id, minutes=arguments.minutes, input_mode=arguments.input_mode, at=parse_moment(arguments.at))
+    if command == "mission-assess":
+        return store.mission_assess(arguments.mission_id, session_id=arguments.session_id, result=arguments.result,
+                                    support=arguments.support, evidence_turn_ids=arguments.evidence_turn_id,
+                                    note=arguments.note, at=parse_moment(arguments.at))
+    if command == "mission-undo":
+        return store.mission_undo(arguments.mission_id, at=parse_moment(arguments.at))
+    if command == "mission-update":
+        return store.mission_update(arguments.mission_id, goal=arguments.goal, deadline=arguments.deadline,
+                                    cancel=arguments.cancel, at=parse_moment(arguments.at))
     if command == "init":
         profile = store.init_profile(
             name=arguments.name,
@@ -3375,7 +3776,7 @@ def _run_locked(store: StateStore, arguments: argparse.Namespace) -> dict[str, A
                                     input_mode=arguments.input_mode, at=parse_moment(arguments.at))
     if command == "roleplay-turn":
         return store.roleplay_turn(arguments.session_id, speaker=arguments.speaker, text=arguments.text,
-                                   event_id=arguments.event_id, at=parse_moment(arguments.at))
+                                   event_id=arguments.event_id, support=arguments.support, at=parse_moment(arguments.at))
     if command == "roleplay-stop":
         moment = parse_moment(arguments.at)
         store.roleplay_stop(arguments.session_id, at=moment)

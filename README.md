@@ -15,7 +15,23 @@ It runs inside Claude Code and Codex. Every mistake is filed under its root caus
 
 **A new chat, four months in.** The tutor shows what is due, quotes a sentence you got wrong yesterday, and asks for a new one. This is an actual Claude Code reply to a scripted learner with four months of history. [Read the whole session](demo/session.md).
 
-[Install](#install) · [Why not just a chatbot?](#why-not-just-ask-a-chatbot) · [One mistake over time](#one-mistake-over-time) · [How it works](#how-it-works)
+[Explore the interactive demo](#explore-your-learning-story) · [Install](#install) · [Why not just a chatbot?](#why-not-just-ask-a-chatbot) · [How it works](#how-it-works)
+
+## Explore your learning story
+
+Open **[demo/index.html](demo/index.html)** in your browser after cloning or downloading the repository. Choose a pattern to see its first mistake, the hint that helped, and a later unaided sentence. Move between four days to watch a mistake return with its memory intact. Search sentences, filter grammar families, or open the saved timeline.
+
+The **[goal-preparation demo](demo/missions.html)** follows a Friday job interview across scenes: a hinted introduction stays open, the next session uses the learner's actual history, and later steps handle difficult questions and an unexpected follow-up. Both demos include fifteen roleplay frames with example situations and opening lines.
+
+This is a self-contained, offline demo: no installation, account, API key, or server is needed to open the HTML file. Alex's messages are scripted; each day's counts, schedules, and learning milestones are captured from the real engine before later events happen. It is an explorable example history, not a live tutor. GitHub's file viewer shows the HTML source; download the file to interact with it.
+
+For your own saved learning history:
+
+```bash
+python scripts/deutsch_dna.py dashboard --output my-progress.html
+```
+
+Open the resulting file in your browser. It contains your exported sentences, stays offline, and leaves your learning records and review schedule unchanged. Export again to refresh it; replacing an existing HTML file requires `--force`. [Dashboard guide](docs/dashboard.md).
 
 ## Install
 
@@ -142,11 +158,15 @@ A pattern is mastered after six passed reviews. A failed review sends it back to
 | “Give me a hint.” | You repair the sentence; the tutor remembers the help you needed. |
 | “Let's review.” | Due patterns return in fresh situations. Copying the old answer cannot advance mastery. |
 | “I have a meeting tomorrow.” | A roleplay can use your goal and a pattern you are practising. |
+| “I have a German job interview on Friday.” | A saved three-step preparation plan, adapted across scenes and chats to your actual answers, help used, and recorded mistakes. |
+| “Continue my interview preparation.” | Resume the current scene, unfinished assessment, or next communication task. |
 | “Let's practise words.” | Vocabulary from your scenes returns in spaced reviews. |
-| “How am I doing?” | Your recorded progress, with the sentences behind it. |
+| “How am I doing?” | Your recorded progress, with the sentences behind it. Ask for a visual view to get an offline, interactive learning story. |
 | “That wasn't a mistake.” | The tutor can undo the correction and restore its schedule. |
 
 During a roleplay, ordinary corrections wait until the debrief. Start with “Restoranda konuşalım” or “Roleplay Restaurant”; finish with “bitir” or “stop roleplay”. The reply includes up to three corrections and useful vocabulary.
+
+There are fifteen roleplay frames, including interviews, presentations, train travel, hotels, a public office, phone appointments, shopping, school, and customer service. [Example requests for every frame](docs/practice.md#more-roleplay-situations) · [Continuing preparation for a real event](docs/missions.md).
 
 [Your first minute, roleplays, and more examples](docs/practice.md).
 
@@ -177,8 +197,8 @@ flowchart LR
     engine <--> state[("~/.deutschdna<br/>plain JSON")]
 ```
 
-- **The skill** is [`SKILL.md`](SKILL.md) and seven [references](references): how to correct minimally, when to give a hint instead of the answer, and what may be claimed about progress.
-- **The engine** is one Python file with no dependencies. It stores every pattern, schedules reviews, remembers the hint that helped, and supports undo. More than 140 tests run on Linux, macOS, and Windows.
+- **The skill** is [`SKILL.md`](SKILL.md) and eight [references](references): how to correct minimally, when to give a hint instead of the answer, how to continue real-life preparation, and what may be claimed about progress.
+- **The engine** is one Python file with no dependencies, plus a bundled scenario catalog and dashboard template. It stores patterns and preparation plans, schedules reviews, remembers helpful cues, supports undo, and exports an offline dashboard. More than 140 tests run on Linux, macOS, and Windows.
 - **The catalog** names [about a hundred root causes](references/patterns.md) of typical mistakes, so that *mit mein Chef* and *mit meine Schwester* count as one problem and not two.
 - **Nothing else.** No account, server, or telemetry. Your messages go to the model you already use, as in any other chat there. Only the memory is new, and it is a folder of JSON files.
 
@@ -206,8 +226,10 @@ The easiest place to help is the [pattern catalog](references/patterns.md). It h
 
 ## Roadmap
 
+- Available: three-step preparation for real-life goals across scenes and chats, with fifteen roleplay frames.
 - Planned: Goethe B1/B2, telc B1/B2, and telc Deutsch Beruf exam modes.
-- Exploring: voice practice, pronunciation fingerprint, and a local dashboard.
+- Available: an offline local dashboard and an interactive example history.
+- Exploring: voice practice and pronunciation fingerprint.
 
 ## License
 

@@ -1,6 +1,6 @@
 ---
 name: deutsch-dna
-description: Coach German writing and conversation with minimal corrections, persistent root-cause mistake tracking (FehlerDNA), mistake-based spaced repetition with a new sentence every time, everyday roleplay whose new words come back in spaced reviews, and an honest progress profile. Use when a learner wants German correction, personalized review, word practice, a progress overview, or realistic German practice; do not use for translation-only requests that involve no learning or feedback.
+description: Coach German writing and conversation with minimal corrections, persistent root-cause mistake tracking (FehlerDNA), mistake-based spaced repetition with a new sentence every time, roleplay whose words return in spaced reviews, continuing preparation for real-life goals across sessions, and an honest progress profile. Use for German correction, personalized review, vocabulary, progress, roleplay, or preparation for an interview, presentation, appointment, or other concrete event; do not use for translation-only requests without learning or feedback.
 ---
 
 # DeutschDNA

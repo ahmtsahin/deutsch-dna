@@ -1,7 +1,7 @@
 {
   "name": "deutsch-dna",
   "displayName": "DeutschDNA",
-  "version": "1.6.2",
+  "version": "1.8.0",
   "description": "A German tutor that remembers your mistakes, brings each one back in a new sentence, and keeps the hint that helped. Local memory, no API key.",
   "author": {
     "name": "Ahmet Sahin",

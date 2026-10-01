@@ -35,6 +35,14 @@ Stored times are UTC. Outputs add `*_local` twins such as `seen_at_local`, `next
 | `merge` | Fold the source pattern into the target: counts add up, histories interleave, the source key becomes an alias of the target. `undo <target-id>` reverts it. |
 | `rename` | Change a pattern's key, category, rule, or German `--label`; an old key stays as an alias. Refuses to collide with an existing pattern and points to `merge`. |
 | `summary` | The FehlerDNA profile: per-category accuracy, root-cause clusters, weakest and due patterns, streak. |
+| `scenarios` | Fifteen roleplay frames with opening lines, example requests, and two variations. Runs without creating or locking learner state. |
+| `mission-create` | Save a learner-stated `--goal`, supported `--scenario`, and optional `--deadline`; retries of an identical active goal reuse its ID. |
+| `mission-list`, `mission-show` | Active goals by default, or one plan's communication steps, last assessment evidence, local date, pending scene, and `next_action`. `mission-list --status all` includes completed/cancelled goals. |
+| `mission-start` | Start its current step or resume an unfinished scene/debrief/assessment. Returns prior actual answers, notes, corrections, and up to three active focus patterns. |
+| `mission-assess` | Assess a completed linked scene as `achieved` or `practice`, with required actual `--support`, source `--evidence-turn-id` flags, and `--note`. |
+| `mission-undo` | Undo the latest goal assessment, leaving grammar records intact; blocked while a newer scene is unassessed. |
+| `mission-update` | Change `--goal`/`--deadline` or `--cancel` an active plan. End and finish an active/debriefing scene before cancelling. |
+| `dashboard` | Export a self-contained offline HTML snapshot to `--output` (default `deutschdna-dashboard.html`). `--force` deliberately replaces an existing HTML export. Returns the absolute path, pattern count, frame count, and demo flag. Leaves learner JSON, profile-display markers, and schedules unchanged. |
 | `recap` | The session opener: resumable `onboarding`, activity in the last `--days` (default 7), totals, `schedule`, `full_profile_due`, `board` with `board_more`, the rendered `card`, the `callback` pattern (the first due one, else the most recent mistake, with `reason`), and `needs_label` (active patterns still shown by their English key). |
 | `speak`, `roleplay-start` | Start an uninterrupted scene with a target duration, input mode, relevant goal, and optional focus. `speak restaurant` defaults to five minutes. |
 | `roleplay-turn` | Store one actual learner/partner utterance; returns the turn ID, elapsed time, learner-turn count, and `should_close` cue without grading. |
@@ -67,6 +75,26 @@ Turn results expose elapsed wall-clock seconds, automatically counted learner tu
 Finished scenes are idempotent and retain the stopped duration; all later feedback/turn writes are rejected. Legacy sessions without utterances still accept supplied `--turns` and `--duration-seconds`; provided duration is labelled as provided. Scenes with actual utterances reject mismatched turn counts and duration overrides. Duration is always labelled scene duration, never time spent speaking.
 
 Completed `roleplay-show`, `roleplay-finish`, and repeated end controls also return `learner_message` (the full text report), `response_required: true`, and `next_action: present_debrief`. The JSON default therefore supplies ready-to-display text, not only internal records. Active/debriefing sessions have no prepared learner message and return `continue_scene`/`prepare_debrief`. These fields describe the remaining assistant action; they do not prove the user has seen anything. The assistant must include the report in its final visible response, unless the user explicitly declined feedback. Printing terminal output or saving the session does not satisfy that requirement. `recap.last_roleplay` locates the latest completed session for a requested missing report; reopening it is read-only and does not re-record mistakes.
+
+## Offline dashboard export
+
+`dashboard` uses a bundled `scripts/dashboard.html` template. It reads saved patterns without initializing or writing learner JSON; a missing home produces an empty view without creating that directory. Existing homes use the ordinary state lock for a consistent read. The output must end in `.html` or `.htm`, cannot overwrite the source template, and refuses existing files unless `--force` is supplied.
+
+The embedded projection contains the learner's supplied name and level, pattern examples, helpful hints, current schedule, retained timeline events, historical learning proofs, active/completed missions and their latest evidence, and the roleplay catalog. Undo snapshots, novelty fingerprints, and unrelated roleplay transcripts are excluded. Learner strings are JSON-escaped before embedding and rendered as text in the browser; the page makes no network requests. Dates use the engine's local offset rather than the browser's time zone.
+
+`--at` changes the clock used for due markers; it is not historical reconstruction. The demo renderer captures separate snapshots as its events happen instead. Neither exporting nor opening a view counts as practice, marks a profile as shown, or changes the review ladder. A saved milestone with a later error is explicitly historical; it does not claim the pattern is currently mastered.
+
+## Continuing missions
+
+`missions.json` is created only when a goal is saved; it has its own schema version 1 and does not migrate existing learning files. A mission stores its stated goal, scenario, date, three frozen communication steps, current index, status, and assessments. Each assessment retains actual learner turn IDs, verbatim evidence, the help used, and the teaching agent's note. Scenes hold `mission_id`, `mission_step_id`, and repairable `mission_focus_ids`. Scene creation and goal assessment each write one document atomically, so an interruption can resume an unassessed completed scene without creating a second attempt. All CLI mission commands use the ordinary state lock.
+
+`--deadline` accepts `YYYY-MM-DD`, today/tomorrow, or a weekday in English/German/Turkish. It resolves on the engine's local calendar; a bare weekday includes today. `days_remaining` and `overdue` are computed from that calendar, with no guessed event time or automatic completion. An empty update clears the date. `recap.missions` exposes active preparation for a new chat; explicit learner requests take precedence over automatic opener exercises.
+
+`mission-start` selects active errors from the prior completed scene before other due/recurring patterns. Its adaptation includes the actual previous evidence, support, note, and current scene corrections. A `practice` result keeps the step and uses a new opening with a repair policy; an `achieved` result advances one communication step and adds a challenge. Unknown personal facts and learning styles are never inferred.
+
+Record actual partner help with `roleplay-turn --support hint/shown`; only partner turns accept these labels. `mission-assess` checks ownership and completion of the linked scene, real learner evidence turns, scene/assessment chronology, and recorded help. `achieved` rejects a hint/supplied answer even if the assessment claims `none`. Exact retries are idempotent; a changed judgment requires undo. A new pending scene blocks undo of the prior assessment so its sources cannot be reassigned to another step.
+
+The tutor judges the communication criteria; the engine does not grade German or validate their semantics. Both `achieved` and `practice` are goal assessments, not grammar-review grades. They leave learning counts, helpful hints, mastery, and review dates untouched. Three achievements complete this practice plan, never a proficiency/readiness certificate. See [the mission protocol](missions.md) and [learner guide](../docs/missions.md).
 
 ## Onboarding and optional profile fields
 

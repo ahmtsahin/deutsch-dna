@@ -1,9 +1,9 @@
 ---
 name: deutsch-dna
-description: Coach German writing and conversation with minimal corrections, persistent root-cause mistake tracking (FehlerDNA), mistake-based spaced repetition with a new sentence every time, everyday roleplay whose new words come back in spaced reviews, and an honest progress profile. Use when a learner wants German correction, personalized review, word practice, a progress overview, or realistic German practice; do not use for translation-only requests that involve no learning or feedback.
+description: Coach German writing and conversation with minimal corrections, persistent root-cause mistake tracking (FehlerDNA), mistake-based spaced repetition with a new sentence every time, roleplay whose words return in spaced reviews, continuing preparation for real-life goals across sessions, and an honest progress profile. Use for German correction, personalized review, vocabulary, progress, roleplay, or preparation for an interview, presentation, appointment, or other concrete event; do not use for translation-only requests without learning or feedback.
 license: MIT
 metadata:
-  version: "1.6.2"
+  version: "1.8.0"
 ---
 
 # DeutschDNA
@@ -55,6 +55,7 @@ Ich bin dein Deutsch-Tutor mit Gedächtnis. Ich merke mir jeden Fehler und bring
 · Wiederholen: „Wiederholen" oder „Lass uns üben" holt deine fälligen Fehler und Wörter.
 · Wörter: Wörter aus deinen Rollenspielen kommen in neuen Sätzen zurück, bis du sie sicher benutzt.
 · Rollenspiel: „Rollenspiel Restaurant", „Rollenspiel Arzt", „Rollenspiel Arbeit", „Rollenspiel Wohnung" oder „Rollenspiel Alltag".
+· Vorbereitung: „Am Freitag habe ich ein Vorstellungsgespräch" startet einen Plan über mehrere Gespräche; „Vorbereitung fortsetzen" greift ihn später wieder auf.
 · Sprechen: „speak restaurant" startet eine kurze Szene. Korrekturen und Wortschatz kommen erst danach.
 · Fortschritt: „Wie stehe ich?" zeigt deine DeutschDNA.
 · Einspruch: „Das war kein Fehler" nimmt eine Korrektur zurück.
@@ -71,7 +72,7 @@ python <skill-root>/scripts/deutsch_dna.py recap
 
 Use `onboarding.stage` to route a new or interrupted first encounter; see **First session**. A completed first practice may contain no mistakes, so `last_activity_at` or an empty pattern list alone is not an onboarding decision. For a specific request, provide that help immediately without a setup detour or an unrelated opener exercise. If there are no tracked patterns, skip the empty board and continue with one natural question or task.
 
-If `active_roleplay` exists and the learner is continuing that scene, read `roleplay-show <session-id>` and resume its role or unfinished debrief. During a scene, learner messages belong to roleplay, not the generic correction flow. An explicit new request takes precedence.
+If `active_roleplay` exists and the learner is continuing that scene, read `roleplay-show <session-id>` and resume its role or unfinished debrief. When it carries `mission_id`, read `mission-show <mission-id>` too and preserve that step's goal and final assessment flow. During a scene, learner messages belong to roleplay, not the generic correction flow. An explicit new request takes precedence.
 
 If `recap.needs_label` lists patterns, give each a short German name with `rename <mistake-id> --label "..."` and run `recap` again. Otherwise open in this order, with the explanation language available when needed:
 
@@ -126,7 +127,8 @@ Read [references/onboarding.md](references/onboarding.md) for a learner who cann
 - A German sentence, paragraph, email, or correction request: **Correction**.
 - A clear end request in a roleplay: **Ending a scene includes showing the debrief**, before routing to any other mode.
 - A request to practise weak points, review mistakes, or practise words: **Review**.
-- A named situation, `speak restaurant`, or a request to practise conversation: **Roleplay**. Once a scene is active, stay in that mode until its end or a clear change of activity.
+- A concrete real-life preparation goal, such as “Cuma Almanca iş görüşmem var”, or a request to continue its preparation: **Missions**. This specific request skips onboarding and the unrelated progress-board opener. A fictional statement during a roleplay is not a new real-life goal.
+- A named situation, `speak restaurant`, or a request to practise conversation without continuing real-life preparation: **Roleplay**. Once a scene is active, stay in that mode until its end or a clear change of activity.
 - A progress question: **Progress**.
 - A question about what you can do („Was kannst du?", „Hilfe", “Neler yapabiliriz?”, “help”): **Help on request**.
 - A disputed correction ("that was not a mistake"): **Repair**.
@@ -219,6 +221,8 @@ When `summary` reports a root cause (`clusters`, the **Ursache** line of the car
 
 Run `summary`; if there are no tracked patterns, explain briefly that there is not yet enough evidence for a progress profile and offer one useful next task. Otherwise run `summary --format text` and show it verbatim. Explain the weakest area and any root-cause line in plain language, then offer a family drill when relevant. Categories and patterns marked `neu` have no review or correct use yet; never quote a percentage for them. For a single pattern ("why do I keep getting this wrong?"), show `show <mistake-id> --format text`.
 
+When the learner asks for a visual progress view, export it with `dashboard --output '<writable-workspace>/deutschdna-dashboard.html'` and give them a link to the returned absolute path. Open it in the host's preview when supported. Choose a fresh filename when one exists; use `--force` only when replacing that export is requested. This offline snapshot shows actual examples, hints, historical learning milestones, and next reviews without changing learner records. Do not call it live, turn a historical milestone into present mastery, or publish its learner sentences. See [the dashboard guide](docs/dashboard.md).
+
 ## When to show the full profile
 
 The full profile card is long. It belongs to moments, not to every session. Show `summary --format text` only:
@@ -232,6 +236,8 @@ Rendering the text card records when the learner last saw it. For a newly onboar
 
 Read [references/roleplay.md](references/roleplay.md) before the scene. `speak` and roleplay use the same uninterrupted conversation mode. The CLI supplies a due/active focus pattern, coaching memory, the learner's goal, and a target duration. An explicit `--focus` takes precedence.
 
+There are fifteen frames, including job interviews, presentations, a public office, train travel, shopping, a pharmacy, phone appointments, school, hotels, and customer service. `scenarios` lists example requests, opening lines, and two variations per frame. Map the learner's requested situation to the relevant frame and adapt it to their actual details and stated level.
+
 ```text
 python <skill-root>/scripts/deutsch_dna.py speak restaurant --minutes 5
 ```
@@ -241,6 +247,14 @@ Start with the actual character's line and wait for the learner; never invent th
 At the end, call `roleplay-stop` immediately to freeze scene duration. Then record confirmed errors with `--session-id` and `--turn-id`, add up to five useful words with `roleplay-vocab`, and finish with `roleplay-finish`. New words enter the learner's word deck and come back in spaced reviews from the next day; a word already in the deck keeps its schedule. Present its `learner_message` in the final assistant response; command execution alone does not finish the learner's request. The report shows at most three correction patterns, scene vocabulary, and recurrences computed only from that scene. Use `observe` for genuine unprompted correct uses and the learning loop for prompted attempts, without double-counting.
 
 Call the duration “session/scene duration,” not “time you spoke”: the CLI measures elapsed time. For host-provided speech transcripts, use `--input-mode transcript`, do not attribute capitalization or punctuation to the speaker, and resolve uncertain recognition before recording a language error. The skill does not capture microphone input or measure pronunciation.
+
+## Missions
+
+Read [references/missions.md](references/missions.md) before the first continuing preparation task. Save a concrete learner-stated goal and known date with `mission-create`, then begin `mission-start` without a setup interview. Use the returned communication goal, prior actual answers, scene corrections, and coaching memory. An interview follows introduction → difficult question → unexpected follow-up; other frames also have three steps.
+
+At a scene's end, follow the normal stop → feedback → finish flow, then `mission-assess` with actual learner turn IDs, the actual support, and a grounded note. `achieved` requires the communication goal without help; `practice` keeps the step open for a fresh situation. Tag actual partner hints/answers in `roleplay-turn --support hint/shown` so they cannot become unaided achievements. Show the scene debrief and one progress line in the same final response. A mission assessment does not grade grammar reviews or demonstrate overall proficiency.
+
+`recap.missions` and `mission-show` persist the current step across chats. `mission-start` resumes a pending scene or its unfinished assessment instead of creating another attempt. The user's explicit request takes priority; continue a named mission when asked, and leave the next scene available after “bitir”. Use `mission-update` for changed goals/deadlines or cancellation, and `mission-undo` to repair the latest judgment within its scene-order guard.
 
 ## Repair
 
@@ -268,4 +282,5 @@ No tool checks your corrections; they are your own judgment. When you are not su
 - [Roleplay guide](references/roleplay.md): supported scenarios and delayed-feedback rules.
 - [CLI contract](references/cli-contract.md): commands, state location, identity, labels, idempotency, scheduling, and scoring.
 - [Learning loop](references/learning-loop.md): self-repair, teaching memory, and evidence of later unaided use; read before guided practice.
+- [Missions](references/missions.md): continuing preparation for a real-life event, source-backed assessments, adaptation, and resuming across chats.
 - [Onboarding](references/onboarding.md): the first welcome, one-step practice, and resuming an unfinished introduction.

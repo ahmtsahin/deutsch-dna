@@ -16,7 +16,7 @@ In voice, make the switch from character to tutor explicit and relay the short e
 python <skill-root>/scripts/deutsch_dna.py speak restaurant --minutes 5
 ```
 
-`roleplay-start --scenario restaurant` remains supported. Scenarios are `alltag`, `arbeit`, `arzt`, `wohnung`, and `restaurant`; `speak` also accepts `everyday`, `work`, `doctor`, and `housing`. The default target is five minutes. This is an approximate scene length: time is checked when a turn is logged, so do not promise to interrupt at exactly five minutes or wait on a timer.
+`roleplay-start --scenario restaurant` remains supported. There are fifteen scenarios; `scenarios` returns their openings and example situations. English aliases such as `interview`, `presentation`, `train`, `shopping`, `phone`, and `customer-service` work with `speak`. The default target is five minutes. This is an approximate scene length: time is checked when a turn is logged, so do not promise to interrupt at exactly five minutes or wait on a timer.
 
 The response contains the role, opening, learner goal, and optional `focus_pattern` with coaching memory. Its `personal_goal` is the learner's stated goal. Adapt the scene to relevant goals while respecting the requested situation. Keep the focus hidden; do not force the same grammar pattern into every question. Start without the onboarding questionnaire, a progress board, or the full help menu.
 
@@ -38,6 +38,8 @@ python <skill-root>/scripts/deutsch_dna.py roleplay-turn s_... --speaker learner
 ```
 
 Keep the returned turn IDs for the debrief. Use source message IDs when available, or one stable ID per actual message; reuse only for a retry. A repeated sentence in a different learner message is a different turn. The CLI logs text and time without grading it. Keep all local state operations out of the spoken dialogue.
+
+When the partner gives a hint or supplies an answer, mark that actual partner turn with `--support hint` or `--support shown`; ordinary dialogue uses `none` by default. These labels preserve the distinction between help and an unaided mission result. A learner turn cannot carry help metadata. For a concrete real-life goal spanning scenes, use the [mission flow](missions.md) and its saved plan rather than creating unrelated roleplays each time.
 
 - Stay in character and respond to the meaning. After the reservation answer, continue naturally with “Auf welchen Namen?”
 - Ask one question at a time. Follow a learner-led change of subject within the scene; rephrase briefly when they seem confused.
@@ -101,3 +103,15 @@ The report is in German by default. For a beginner or a requested support langua
 - `arzt`: describing symptoms and answering questions in fictional language practice.
 - `wohnung`: viewing, repairs, landlord questions, moving.
 - `restaurant`: reservation, ordering, requests, problems, paying.
+- `bewerbung`: introduce yourself, explain an experience, handle a difficult question and follow-up.
+- `praesentation`: present a project, explain a term, answer a skeptical question.
+- `behoerde`: a fictional municipal-office appointment, missing information, clarification.
+- `bahnhof`: a delayed train, an alternative route, a platform or ticket question.
+- `einkaufen`: compare options, exchange an item, explain a purchase problem.
+- `apotheke`: a fictional request and unfamiliar vocabulary; no treatment, medication, or dose advice.
+- `telefon`: make, move, or confirm an appointment over the phone.
+- `schule`: a fictional school concern, homework question, agreed next step.
+- `hotel`: check in, clarify a booking, explain a room problem.
+- `kundenservice`: a fictional delivery or billing problem and a requested resolution.
+
+The catalog supplies a frame, an opening, and two optional variations, not both sides of a finished learner dialogue. [Practice examples](../docs/practice.md) show natural requests for all fifteen frames.

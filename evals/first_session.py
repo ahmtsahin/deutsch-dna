@@ -173,8 +173,10 @@ def install_skill(source: Path, target: Path) -> None:
     target.mkdir(parents=True)
     shutil.copytree(source / "references", target / "references")
     shutil.copytree(source / "agents", target / "agents")
+    shutil.copytree(source / "docs", target / "docs")
     (target / "scripts").mkdir()
-    shutil.copy2(source / "scripts" / "deutsch_dna.py", target / "scripts" / "deutsch_dna.py")
+    for name in ("deutsch_dna.py", "scenario_catalog.py", "dashboard.html"):
+        shutil.copy2(source / "scripts" / name, target / "scripts" / name)
     skill = re.sub(r"^name: .*$", f"name: {SKILL_NAME}", (source / "SKILL.md").read_text(encoding="utf-8"), count=1, flags=re.M)
     (target / "SKILL.md").write_bytes(skill.encode("utf-8"))
 

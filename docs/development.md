@@ -28,6 +28,22 @@ python evals/interrupted_lesson.py --host codex --model gpt-6-astra
 
 ## Render the README stories
 
+The interactive HTML demo uses only the standard library and snapshots isolated learner state:
+
+```bash
+python scripts/render_dashboard_demo.py --force
+```
+
+It writes `demo/index.html` using the same `scripts/dashboard.html` template as personal `dashboard` exports. Dashboard unit tests check snapshot isolation, historical milestones after recurrence, source labels, local dates, export immutability, and safe embedding of learner text. [Dashboard guide](dashboard.md).
+
+The continuing interview-preparation story also uses isolated state and no model calls:
+
+```bash
+python scripts/demo_missions.py --force
+```
+
+It writes `demo/missions.html`. `tests/test_missions.py` covers persistence across chats, local deadlines, help/evidence gates, resumable scenes, adaptive focus, assessment idempotency, undo order, cancellation, and the isolated eval install's runtime assets. The example learner and communication judgments are scripted; the engine supplies their saved sources and progression.
+
 ```bash
 python -m pip install pillow
 python scripts/render_demo_gif.py --story learning-loop

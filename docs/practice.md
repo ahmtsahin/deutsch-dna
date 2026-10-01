@@ -27,8 +27,9 @@ There is no level test first. If your sentence has a mistake, you get a small hi
 - **Correct my German.** Minimal correction, the reason, and the recurrence callback when a mistake comes back.
 - **Let's review.** One due mistake at a time, each in a new situation, then the words due from your scenes.
 - **Give me a hint.** Room to repair the sentence yourself; the help and outcome are remembered.
-- **I have a meeting tomorrow.** A stated goal can shape a roleplay around a pattern you are practising.
-- **Roleplay Restaurant.** Scenes for Alltag, Arbeit, Arzt, Wohnung, and Restaurant. No interruptions; at most three corrections in the debrief.
+- **I have a job interview on Friday.** Start a saved preparation plan across scenes and chats, using your actual answers and recorded mistakes. [How preparation continues](missions.md).
+- **Continue my interview preparation.** Resume its scene or next step, with the original goal and date preserved.
+- **Roleplay Restaurant.** Fifteen frames with optional complications. No ordinary correction interruptions; at most three corrections in the debrief.
 - **Let's practise words.** Words from your scenes come back after 1, 3, 7, 14, 30, and 60 days, each time in a new sentence you write yourself.
 - **How am I doing?** The DeutschDNA profile, the root cause behind your weakest area, and a family drill for it.
 - **That wasn't a mistake.** The agent reverts just that correction with `undo`, schedule included, or fixes the entry with `merge`, `rename`, or `forget`. A wrong merge can be undone too.
@@ -52,3 +53,36 @@ python scripts/demo.py --speak
 ```
 
 The demo produces a 6m 42s scene from recorded timestamps, including four separate occurrences of the `Person → Personen` pattern. That is elapsed scene time, including both participants and pauses. The skill does not measure how long your microphone was active. Text works directly; host-provided speech transcripts can use the same flow, with spelling and punctuation excluded from speech feedback. Audio capture and pronunciation scoring are not included.
+
+## More roleplay situations
+
+The opening and partner role are prepared; the conversation continues from your answers. You can choose a complication, ask for simpler language, or use your own real details. These requests are examples, not facts saved about you:
+
+| Frame | Example request |
+| --- | --- |
+| `alltag` | “Komşumla konuşalım. Hafta sonu için plan yapalım ama saatlerimiz uyuşmasın.” |
+| `arbeit` | “İş arkadaşına geciken bir işi anlatıp yeni bir teslim tarihi konuşalım.” |
+| `arzt` | “Kurgusal bir doktor randevusunda şikâyetimi anlatayım; bir soruyu anlamayıp tekrar isteyeyim.” |
+| `wohnung` | “Ev bakmaya gidelim. Gürültü ve taşınma tarihi hakkında soru sorayım.” |
+| `restaurant` | “Restoranda rezervasyonum bulunamasın; birlikte bir çözüm bulalım.” |
+| `bewerbung` | “İş görüşmesi yapalım. Bir proje anlatayım, ardından zor bir takip sorusu sor.” |
+| `praesentation` | “Projemi sunayım. Dinleyici bütçeyi sorgulasın ve daha basit açıklama istesin.” |
+| `behoerde` | “Kurgusal bir Bürgeramt randevusunda eksik evrakı ve sonraki adımı sorayım.” |
+| `bahnhof` | “Trenim geciksin ve aktarmayı kaçırma ihtimalim olsun. Alternatif bağlantı sorayım.” |
+| `einkaufen` | “Yanlış beden bir ceketi değiştirmek isteyeyim; istediğim beden bulunmasın.” |
+| `apotheke` | “Eczanede kurgusal bir konuşma yapalım. Bir ambalajdaki Almanca kelimenin anlamını sorayım.” |
+| `telefon` | “Telefonda randevumu değiştireyim. İlk önerilen saat bana uymasın.” |
+| `schule` | “Öğretmenle kurgusal bir ödev sorununu konuşup küçük bir sonraki adım belirleyelim.” |
+| `hotel` | “Otele giriş yapayım. Odam rezervasyondaki özelliklerle uyuşmasın.” |
+| `kundenservice` | “Teslim edilmeyen siparişi müşteri hizmetlerine anlatıp çözüm isteyeyim.” |
+
+The CLI catalog includes an opening and two variations per frame:
+
+```bash
+python scripts/deutsch_dna.py scenarios
+python scripts/deutsch_dna.py speak interview
+python scripts/deutsch_dna.py speak train
+python scripts/deutsch_dna.py speak phone
+```
+
+For an actual upcoming event, ask for [continuing preparation](missions.md) so that the next scene uses the previous one's evidence instead of starting a separate roleplay.

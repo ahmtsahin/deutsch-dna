@@ -66,8 +66,13 @@ INTERNAL_TERMS = re.compile(
     re.IGNORECASE,
 )
 SANDBOX_DENIAL = re.compile(
-    r"state_not_writable|access is denied|erişim engellendi|permission denied|PermissionError|operation not permitted|"
-    r"could not open the state lock|could not create the state directory",
+    r"access is denied|erişim engellendi|permission denied|PermissionError|operation not permitted",
+    re.IGNORECASE,
+)
+# The helper's own report of a blocked state folder. SKILL.md quotes it too, so it counts only for a helper call:
+# a failed command that also printed SKILL.md is not a blocked one.
+STATE_DENIAL = re.compile(
+    r"state_not_writable|could not open the state lock|could not create the state directory",
     re.IGNORECASE,
 )
 
@@ -301,10 +306,10 @@ class CodexHost:
                 if item.get("type") == "agent_message":
                     texts.append(item.get("text", ""))
                 elif item.get("type") == "command_execution":
-                    output = item.get("aggregated_output") or ""
+                    command, output = item.get("command", ""), item.get("aggregated_output") or ""
                     ok = item.get("exit_code") == 0
-                    calls.append(ToolCall("shell", item.get("command", ""), ok, output[:2000],
-                                          denied=not ok and bool(SANDBOX_DENIAL.search(output))))
+                    denied = SANDBOX_DENIAL.search(output) or ("deutsch_dna.py" in command and STATE_DENIAL.search(output))
+                    calls.append(ToolCall("shell", command, ok, output[:2000], denied=not ok and bool(denied)))
             elif kind in ("turn.failed", "error"):
                 error = json.dumps(event, ensure_ascii=False)[:500]
         if completed.returncode and not error:
@@ -449,8 +454,8 @@ def evaluate(run: Run, state: Path, real_before: dict[str, str], real_after: dic
     return checks
 
 
-def write_transcript(path: Path, run: Run, checks: list[Check]) -> None:
-    lines = [f"# First session · {run.host} · setup {run.setup}", ""]
+def write_transcript(path: Path, run: Run, checks: list[Check], title: str = "First session") -> None:
+    lines = [f"# {title} · {run.host} · setup {run.setup}", ""]
     for index, exchange in enumerate(run.exchanges):
         lines += [f"## Turn {index} · learner ({exchange.kind})", "", exchange.learner, ""]
         for call in exchange.tutor.calls:

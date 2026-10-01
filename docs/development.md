@@ -19,6 +19,13 @@ python evals/first_session.py --host codex --model gpt-6-astra
 
 It uses a copy of the skill called `deutsch-dna-smoke` and isolated state, and fails if `~/.deutschdna` changes. These runs make real model calls through the installed hosts and take a few minutes. `--setup none` checks the experience before permission setup; `--runs 3` repeats the session.
 
+The interrupted-lesson check ends a chat right after the tutor's hint, before the learner answers, and continues in a fresh chat on the same state. There the learner sends the repaired sentence as if resuming, then makes the same mistake in a new sentence and repairs it. The run fails if the unanswered hint saved anything, if the resumed answer counted for anything, if the new mistake was not saved exactly once, or if a sentence given after a hint was saved as unaided. The learner's messages are scripted, so no second model is involved:
+
+```bash
+python evals/interrupted_lesson.py --host claude
+python evals/interrupted_lesson.py --host codex --model gpt-6-astra
+```
+
 ## Render the README stories
 
 ```bash

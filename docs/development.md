@@ -44,6 +44,8 @@ python scripts/demo_missions.py --force
 
 It writes `demo/missions.html`. `tests/test_missions.py` covers persistence across chats, local deadlines, help/evidence gates, resumable scenes, adaptive focus, assessment idempotency, undo order, cancellation, and the isolated eval install's runtime assets. The example learner and communication judgments are scripted; the engine supplies their saved sources and progression.
 
+The README screenshot, `demo/missions.png`, is captured from that HTML at a 960 px browser width and 2× pixel scale, with “The next session” selected and the previous-session evidence expanded. It includes the chapter controls and mission panel. Refresh this screenshot when the demo's content or layout changes; the Python renderer regenerates the HTML only.
+
 ```bash
 python -m pip install pillow
 python scripts/render_demo_gif.py --story learning-loop

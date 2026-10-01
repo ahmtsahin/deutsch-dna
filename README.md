@@ -23,6 +23,12 @@ Open **[demo/index.html](demo/index.html)** in your browser after cloning or dow
 
 The **[goal-preparation demo](demo/missions.html)** follows a Friday job interview across scenes: a hinted introduction stays open, the next session uses the learner's actual history, and later steps handle difficult questions and an unexpected follow-up. Both demos include fifteen roleplay frames with example situations and opening lines.
 
+<p align="center">
+<a href="demo/missions.png"><img src="demo/missions.png" width="820" alt="Goal-preparation demo: Alex's Friday interview plan has two of three communication-practice steps completed. Introduction and difficult questions are complete; an unexpected follow-up is next. The previous session's actual saved answer and its weil word-order error remain visible for the next scene."></a>
+</p>
+
+**Preparation that carries over.** Two communication tasks are complete; the next scene receives the previous answer and its recorded error. Screenshot of the demo with a scripted learner and scripted assessments, backed by real engine snapshots.
+
 This is a self-contained, offline demo: no installation, account, API key, or server is needed to open the HTML file. Alex's messages are scripted; each day's counts, schedules, and learning milestones are captured from the real engine before later events happen. It is an explorable example history, not a live tutor. GitHub's file viewer shows the HTML source; download the file to interact with it.
 
 For your own saved learning history:

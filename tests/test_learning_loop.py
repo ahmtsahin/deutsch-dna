@@ -138,12 +138,26 @@ class LearningLoopTests(StoreTestCase):
                              answer=first["examples"][0]["corrected"], at=BASE_TIME + timedelta(minutes=5))
         self.assertEqual(self.store.show(first["id"]), first)
 
-    def test_repeated_spontaneous_sentence_does_not_advance_again(self):
+    def test_an_answer_given_after_a_hint_counts_for_nothing_later(self):
+        # Resuming an interrupted lesson must not turn the assisted repair into unaided evidence.
+        first, _, _ = self.record_example()
+        self.assisted(first["id"])
+        later = BASE_TIME + timedelta(days=1)
+        with self.assertRaises(dna.DeutschDNAError):
+            self.store.coach(first["id"], outcome="independent", prompt="Weiter mit der Aufgabe von gestern.",
+                             answer="Ich spreche mit meinem Chef.", at=later)
+        result = self.store.observe([first["id"]], context="Ich spreche mit meinem Chef.", at=later)[0]
+        self.assertEqual((result["status"], result["learning_proof"]), ("seen", None))
+        after = self.store.show(first["id"])
+        self.assertEqual((after["correct_uses"], after["review_step"]), (0, 0))
+
+    def test_repeated_spontaneous_sentence_counts_once(self):
         first, _, _ = self.record_example()
         self.store.observe([first["id"]], context=CASE_REVIEWS[0][1], at=BASE_TIME + timedelta(days=1))
         repeated = self.store.observe([first["id"]], context=CASE_REVIEWS[0][1].upper(), at=BASE_TIME + timedelta(days=4))[0]
-        self.assertEqual(repeated["status"], "observed")
-        self.assertEqual(repeated["review_step"], 1)
+        self.assertEqual(repeated["status"], "seen")
+        after = self.store.show(first["id"])
+        self.assertEqual((after["correct_uses"], after["review_step"]), (1, 1))
         self.assertEqual(len(self.store.due(at=BASE_TIME + timedelta(days=4))), 1)
 
     def test_coach_retry_and_undo_restore_memory(self):

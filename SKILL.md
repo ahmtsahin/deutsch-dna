@@ -3,7 +3,7 @@ name: deutsch-dna
 description: Coach German writing and conversation with minimal corrections, persistent root-cause mistake tracking (FehlerDNA), mistake-based spaced repetition with a new sentence every time, everyday roleplay whose new words come back in spaced reviews, and an honest progress profile. Use when a learner wants German correction, personalized review, word practice, a progress overview, or realistic German practice; do not use for translation-only requests that involve no learning or feedback.
 license: MIT
 metadata:
-  version: "1.6.1"
+  version: "1.6.2"
 ---
 
 # DeutschDNA
@@ -164,7 +164,7 @@ In free conversation, react to the meaning of their message first and continue w
    python <skill-root>/scripts/deutsch_dna.py observe m_... --context '<their exact sentence>'
    ```
 
-   Then show their last wrong sentence (`last_mistake` in the response) next to today's correct one, with how long ago it was. Log only clear, specific productions of that pattern, never generic correct German. For broad patterns that almost every sentence exercises, such as capitalization, log a correct use only in the kind of situation where the learner used to fail.
+   Then show their last wrong sentence (`last_mistake` in the response) next to today's correct one, with how long ago it was. A `seen` result means the pattern already knows that sentence, as an earlier answer, a correction, or an earlier use; nothing was counted, so leave out the before-and-after line. Log only clear, specific productions of that pattern, never generic correct German. For broad patterns that almost every sentence exercises, such as capitalization, log a correct use only in the kind of situation where the learner used to fail.
 
 When `observe`, `grade`, or `coach` returns a non-null top-level `learning_proof` (inside an `observe` result), show its actual with-help/without-help sentences and local dates. It is evidence of this transfer, not overall fluency. Do not announce the same stored milestone on every message.
 

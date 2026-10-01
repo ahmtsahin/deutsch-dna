@@ -55,7 +55,7 @@ Then say in one sentence that it will come back tomorrow in a new sentence. Neve
 
 ## The before-and-after line
 
-For a correct, unprompted use, log `observe` and set the last wrong sentence from the response (`last_mistake`) next to the new one. An opener task is prompted: use `grade` when due, or `coach` otherwise, as described in [the learning loop](learning-loop.md). Do not also observe the same answer.
+For a correct, unprompted use, log `observe` and set the last wrong sentence from the response (`last_mistake`) next to the new one. When the result is `seen`, the engine already knows that sentence, for example an answer the learner gave after a hint in an earlier session, so it is not new evidence: leave out the line. An opener task is prompted: use `grade` when due, or `coach` otherwise, as described in [the learning loop](learning-loop.md). Do not also observe the same answer.
 
 ```text
 Vor 12 Tagen: „Ich spreche mit mein Chef." · Heute: „Wir haben mit unseren Kunden gesprochen." ✓

@@ -112,9 +112,9 @@ Labels are at most 60 characters; the board shows up to 36 of them. Text views (
 
 ## The observe response
 
-Each entry in `results` carries `status` (`observed`, `observed_and_advanced`, or `duplicate`), the new `correct_uses`, the schedule, and `last_mistake`: the latest stored wrong sentence, for the before-and-after line.
+Each entry in `results` carries `status` (`observed`, `observed_and_advanced`, `duplicate`, or `seen`), the new `correct_uses`, the schedule, and `last_mistake`: the latest stored wrong sentence, for the before-and-after line. A `duplicate` or `seen` entry carries only the ID, pattern, and status, because nothing was counted.
 
-`--context` must contain the actual unprompted production. A repeated production can count as correct use but cannot advance the ladder again. Prompted exercises belong to `coach` or `grade`, even when the answer is correct.
+`--context` must contain the actual unprompted production. A sentence the pattern already knows, as an earlier answer, a correction, or an earlier use, returns `seen` and counts for nothing, in a later session too: an answer the learner gave after a hint does not become unaided evidence when they send it again. Prompted exercises belong to `coach` or `grade`, even when the answer is correct.
 
 ## Coaching and transfer evidence
 
@@ -153,7 +153,7 @@ Resolution order on `record`: exact ID, then the same key in any category, then 
 - `record` without `--event-id` derives one from the original and corrected text; an identical call within 30 minutes returns `status: duplicate` and changes nothing. A retry after a crash therefore cannot double-count.
 - `grade` ignores an identical result/prompt/answer/support/correction retry within 5 minutes, before checking due time. A different answer is not a retry.
 - `coach` ignores the same outcome/prompt/answer/strategy/hint within 5 minutes.
-- `observe` ignores a repeat with the same `--context` within 5 minutes.
+- `observe` ignores a repeat with the same `--context` within 5 minutes (`duplicate`); a later repeat returns `seen` and counts for nothing.
 - `roleplay-finish` on a completed session returns it unchanged.
 - `undo` works once per change: a second `undo` on the same pattern fails, and `rename` clears the snapshot. `merge` stores a snapshot of both patterns on the target. Full responses show `undo_available` instead of the stored snapshot.
 
@@ -165,7 +165,7 @@ The successful review sequence is 1, 3, 7, 14, 30, then 60 days. Recording a rec
 
 `grade` and `coach --outcome independent` also return `variety`: null, or the earlier prompt or answer of this pattern that shares at least 60% of its words with the new one (`field`, `similar_to`, `at_local`, `similarity`). It does not block the grade. It means the task reused a sentence frame, such as `Die Planung ist wichtig.` after `Die Einladung ist wichtig.`, which tests that frame rather than transfer to a new situation.
 
-`observe` with a fresh production on an active pattern that is currently due counts as a pass (`source: observed`): a learner who uses the structure correctly in real writing does not need to be quizzed on it that day. Repeated productions and observations on patterns that are not due only increment `correct_uses`.
+`observe` with a fresh production on an active pattern that is currently due counts as a pass (`source: observed`): a learner who uses the structure correctly in real writing does not need to be quizzed on it that day. On a pattern that is not due, it only increments `correct_uses`. A sentence the pattern already knows does neither.
 
 ## Scoring
 

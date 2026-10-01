@@ -1508,8 +1508,11 @@ class StateStore:
             if duplicate:
                 results.append({"id": mistake["id"], "pattern": mistake["pattern"], "status": "duplicate", "learning_proof": None})
                 continue
+            if text_fingerprint(context) in mistake.get("seen_answers", []):
+                # An earlier answer, correction, or use of this pattern is not new evidence, even in a later session.
+                results.append({"id": mistake["id"], "pattern": mistake["pattern"], "status": "seen", "learning_proof": None})
+                continue
             _snapshot(mistake, "observe", moment)
-            fresh = text_fingerprint(context) not in mistake.get("seen_answers", [])
             proof = independent_use(mistake, context, moment, source="spontaneous")
             mistake["correct_uses"] = int(mistake.get("correct_uses", 0)) + 1
             history.append({"observed_at": iso(moment), "context": context})
@@ -1517,7 +1520,7 @@ class StateStore:
             mistake["last_correct_use"] = iso(moment)
             status = "observed"
             next_review = _safe_moment(mistake.get("next_review"))
-            if fresh and mistake.get("status") == "active" and next_review is not None and next_review <= moment:
+            if mistake.get("status") == "active" and next_review is not None and next_review <= moment:
                 self._apply_pass(mistake, moment, source="observed", answer=context)
                 status = "observed_and_advanced"
             results.append(

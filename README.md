@@ -15,21 +15,23 @@ It runs inside Claude Code and Codex. Every mistake is filed under its root caus
 
 **A new chat, four months in.** The tutor shows what is due, quotes a sentence you got wrong yesterday, and asks for a new one. This is an actual Claude Code reply to a scripted learner with four months of history. [Read the whole session](demo/session.md).
 
-[Explore the interactive demo](#explore-your-learning-story) · [Install](#install) · [Why not just a chatbot?](#why-not-just-ask-a-chatbot) · [How it works](#how-it-works)
+[Goal-preparation demo](#goal-preparation-demo) · [Pattern-memory demo](#explore-your-learning-story) · [Install](#install) · [Why not just a chatbot?](#why-not-just-ask-a-chatbot) · [How it works](#how-it-works)
 
-## Explore your learning story
+## Goal-preparation demo
 
-Open **[demo/index.html](demo/index.html)** in your browser after cloning or downloading the repository. Choose a pattern to see its first mistake, the hint that helped, and a later unaided sentence. Move between four days to watch a mistake return with its memory intact. Search sentences, filter grammar families, or open the saved timeline.
-
-The **[goal-preparation demo](demo/missions.html)** follows a Friday job interview across scenes: a hinted introduction stays open, the next session uses the learner's actual history, and later steps handle difficult questions and an unexpected follow-up. Both demos include fifteen roleplay frames with example situations and opening lines.
+Open **[demo/missions.html](demo/missions.html)** in your browser after cloning or downloading the repository. This is the **Real-life goals** demo: it follows a Friday job interview across scenes, from a hinted introduction to difficult questions and an unexpected follow-up shaped by the previous answer.
 
 <p align="center">
-<a href="demo/missions.png"><img src="demo/missions.png" width="820" alt="Goal-preparation demo: Alex's Friday interview plan has two of three communication-practice steps completed. Introduction and difficult questions are complete; an unexpected follow-up is next. The previous session's actual saved answer and its weil word-order error remain visible for the next scene."></a>
+<a href="demo/missions.png"><img src="demo/missions.png" width="820" alt="The Real-life goals demo, with its selected navigation tab and A real goal, A plan that remembers heading. Alex's Friday interview plan has two of three communication-practice steps completed. The next follow-up carries the previous saved answer and its weil word-order error."></a>
 </p>
 
 **Preparation that carries over.** Two communication tasks are complete; the next scene receives the previous answer and its recorded error. Screenshot of the demo with a scripted learner and scripted assessments, backed by real engine snapshots.
 
-This is a self-contained, offline demo: no installation, account, API key, or server is needed to open the HTML file. Alex's messages are scripted; each day's counts, schedules, and learning milestones are captured from the real engine before later events happen. It is an explorable example history, not a live tutor. GitHub's file viewer shows the HTML source; download the file to interact with it.
+## Explore your learning story
+
+Open **[demo/index.html](demo/index.html)** for the separate **Pattern memory** demo. Choose a pattern to see its first mistake, the hint that helped, and a later unaided sentence. Move between four days to watch a mistake return with its memory intact. Search sentences, filter grammar families, or open the saved timeline.
+
+Both demos are self-contained offline HTML files: no installation, account, API key, or server is needed to open them. Both include fifteen roleplay frames with example situations and opening lines. Alex's messages are scripted; each day's counts, schedules, and learning milestones are captured from the real engine before later events happen. GitHub's file viewer shows HTML source; download the files to interact with the example histories.
 
 For your own saved learning history:
 
